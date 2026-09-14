@@ -313,10 +313,10 @@ net.core.wmem_max = 16777216
 | [Open JTalk](https://open-jtalk.sourceforge.net/) | Modified BSD License | Copyright (C) 2008-2016 Nagoya Institute of Technology |
 | [HTS Engine API](https://hts-engine.sourceforge.net/) | Modified BSD License | Copyright (C) 2001-2015 HTS Working Group |
 | NAIST-jdic (open_jtalk_dic_utf_8-1.11) | BSD License | Copyright (C) 2008-2016 Nagoya Institute of Technology |
-| HTS Voice nitech_jp_atr503_m001 | [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) | HTS Working Group, Nagoya Institute of Technology |
+| HTS Voice tohoku-f01-neutral | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | Tohoku University, Graduate School of Information Sciences |
 | [gortsplib/v4](https://github.com/bluenviron/gortsplib) | MIT License | bluenviron |
 | [gorilla/websocket](https://github.com/gorilla/websocket) | BSD-2-Clause License | The Gorilla Authors |
 | [google/uuid](https://github.com/google/uuid) | BSD-3-Clause License | Google LLC |
 
-> **HTS Voice nitech_jp_atr503_m001 (CC BY 3.0) Attribution**:
-> This product uses the HTS voice model `nitech_jp_atr503_m001` created by the HTS Working Group at Nagoya Institute of Technology, licensed under the [Creative Commons Attribution 3.0 Unported License](https://creativecommons.org/licenses/by/3.0/).
+> **HTS Voice tohoku-f01-neutral (CC BY 4.0) Attribution**:
+> This product uses the HTS voice model `tohoku-f01-neutral` created by the Tohoku University, Graduate School of Information Sciences, licensed under the [Creative Commons Attribution 4.0 International License](https://creativecommons.org/licenses/by/4.0/).

@@ -65,14 +65,16 @@ RUN curl -sL \
     && mv /usr/local/open_jtalk_dic_utf_8-1.11 /usr/local/dic
 
 # ---------------------------------------------------------------------------
-# Download HTS Voice: nitech_jp_atr503_m001 (CC BY 3.0)
-# Attribution: HTS Working Group, Nagoya Institute of Technology
+# Download HTS Voice: tohoku-f01-neutral (CC BY 4.0)
+# The most popular natural Japanese female voice for Open JTalk.
+# Attribution: Tohoku University, Graduate School of Information Sciences
+# https://github.com/icn-lab/htsvoice-tohoku-f01
 # ---------------------------------------------------------------------------
 RUN curl -sL \
-    'https://downloads.sourceforge.net/project/open-jtalk/HTS%20voice/hts_voice_nitech_jp_atr503_m001-1.05/hts_voice_nitech_jp_atr503_m001-1.05.tar.gz' \
+    'https://github.com/icn-lab/htsvoice-tohoku-f01/archive/refs/heads/master.tar.gz' \
     | tar -xz -C /tmp/ \
     && mkdir -p /usr/local/voice \
-    && cp /tmp/hts_voice_nitech_jp_atr503_m001-1.05/nitech_jp_atr503_m001.htsvoice \
+    && cp /tmp/htsvoice-tohoku-f01-master/tohoku-f01-neutral.htsvoice \
         /usr/local/voice/
 
 # =============================================================================
@@ -100,7 +102,7 @@ COPY --from=jtalk-builder /usr/local/bin/open_jtalk /usr/local/bin/open_jtalk
 # Dictionary (NAIST-jdic, BSD License)
 COPY --from=jtalk-builder /usr/local/dic /usr/local/dic
 
-# HTS Voice model (CC BY 3.0 — HTS Working Group, Nagoya Institute of Technology)
+# HTS Voice model: tohoku-f01-neutral (CC BY 4.0 — Tohoku University)
 COPY --from=jtalk-builder /usr/local/voice /usr/local/voice
 
 RUN mkdir -p /config /media

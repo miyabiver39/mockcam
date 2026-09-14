@@ -249,9 +249,15 @@ func (s *Service) synthesizeSpeech(text, lang string) []int16 {
 
 	// 1. Try open_jtalk if available
 	if s.hasOpenJTalk {
-		// Common dictionary and voice paths
 		dicPaths := []string{"/var/lib/mecab/dic/open-jtalk/naist-jdic", "/usr/share/open-jtalk/dic", "/usr/local/dic"}
-		voicePaths := []string{"/usr/share/hts-voice/nitech-jp-atr503-m001/nitech_jp_atr503_m001.htsvoice", "/usr/local/voice/nitech_jp_atr503_m001.htsvoice"}
+		// tohoku-f01-neutral: most popular natural female voice for Open JTalk (CC BY 4.0, Tohoku Univ.)
+		// nitech paths kept as fallback for environments with system-installed open-jtalk
+		voicePaths := []string{
+			"/usr/local/voice/tohoku-f01-neutral.htsvoice",
+			"/usr/share/hts-voice/tohoku-f01/tohoku-f01-neutral.htsvoice",
+			"/usr/share/hts-voice/nitech-jp-atr503-m001/nitech_jp_atr503_m001.htsvoice",
+			"/usr/local/voice/nitech_jp_atr503_m001.htsvoice",
+		}
 
 		var foundDic, foundVoice string
 		for _, p := range dicPaths {
@@ -269,7 +275,20 @@ func (s *Service) synthesizeSpeech(text, lang string) []int16 {
 
 		if foundDic != "" && foundVoice != "" {
 			tmpWav := filepath.Join(os.TempDir(), fmt.Sprintf("mockcam_ojt_%d.wav", time.Now().UnixNano()))
-			cmd := exec.Command("open_jtalk", "-x", foundDic, "-m", foundVoice, "-ow", tmpWav)
+			// Standard community-recommended parameters for natural female voice:
+			//   -s 22050  sample rate (Hz)
+			//   -r 0.9    speaking rate (slightly slower for clarity)
+			//   -a 0.55   all-pass constant (spectral envelope, standard for tohoku-f01)
+			//   -u 0.5    voiced/unvoiced threshold
+			cmd := exec.Command("open_jtalk",
+				"-x", foundDic,
+				"-m", foundVoice,
+				"-ow", tmpWav,
+				"-s", "22050",
+				"-r", "0.9",
+				"-a", "0.55",
+				"-u", "0.5",
+			)
 			cmd.Stdin = strings.NewReader(text)
 			if err := cmd.Run(); err == nil {
 				if data, readErr := os.ReadFile(tmpWav); readErr == nil && len(data) > 44 {
