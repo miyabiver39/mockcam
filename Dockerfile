@@ -1,9 +1,26 @@
 # =============================================================================
-# Stage 1: Build Open JTalk + Go Binary
+# Stage 1: Cross-compile Go binary on the BUILD platform (never runs under QEMU)
+#   This avoids the QEMU arm64 HTTP/2 crash that occurs with go mod download.
 # =============================================================================
-FROM golang:1.23-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS go-builder
+
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /build
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -ldflags="-s -w" -o mockcam cmd/mockcam/main.go
+
+# =============================================================================
+# Stage 2: Compile Open JTalk on the TARGET platform and download assets
+#   Runs under QEMU for arm64, but no Go/HTTP2 involved — pure C/cmake only.
+# =============================================================================
+FROM golang:1.23-alpine AS jtalk-builder
 
 # Install build dependencies
 RUN apk add --no-cache \
@@ -58,17 +75,8 @@ RUN curl -sL \
     && cp /tmp/hts_voice_nitech_jp_atr503_m001-1.05/nitech_jp_atr503_m001.htsvoice \
         /usr/local/voice/
 
-# ---------------------------------------------------------------------------
-# Build MockCam Go binary
-# ---------------------------------------------------------------------------
-COPY go.mod go.sum ./
-RUN go mod download
-
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o mockcam cmd/mockcam/main.go
-
 # =============================================================================
-# Stage 2: Runtime image
+# Stage 3: Runtime image
 # =============================================================================
 FROM alpine:3.20
 
@@ -83,17 +91,17 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# MockCam binary
-COPY --from=builder /build/mockcam /app/mockcam
+# MockCam binary (cross-compiled on host, no QEMU dependency)
+COPY --from=go-builder /build/mockcam /app/mockcam
 
-# Open JTalk binary
-COPY --from=builder /usr/local/bin/open_jtalk /usr/local/bin/open_jtalk
+# Open JTalk binary (compiled for target arch)
+COPY --from=jtalk-builder /usr/local/bin/open_jtalk /usr/local/bin/open_jtalk
 
 # Dictionary (NAIST-jdic, BSD License)
-COPY --from=builder /usr/local/dic /usr/local/dic
+COPY --from=jtalk-builder /usr/local/dic /usr/local/dic
 
 # HTS Voice model (CC BY 3.0 — HTS Working Group, Nagoya Institute of Technology)
-COPY --from=builder /usr/local/voice /usr/local/voice
+COPY --from=jtalk-builder /usr/local/voice /usr/local/voice
 
 RUN mkdir -p /config /media
 VOLUME ["/config", "/media"]
