@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MockCam - Virtual Network Camera Control</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#ecfeff',
+              500: '#06b6d4',
+              600: '#0891b2',
+              900: '#164e63',
+            }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans antialiased" x-data="mockCamApp()">
+
+  <!-- Header -->
+  <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400 font-bold text-lg">
+          📹
+        </div>
+        <div>
+          <h1 class="text-lg font-bold text-white tracking-wide flex items-center space-x-2">
+            <span>MockCam</span>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" x-text="status.version || 'v1.0.0'"></span>
+          </h1>
+          <p class="text-xs text-slate-400" x-text="status.model || 'MC-Pro-S'"></p>
+        </div>
+      </div>
+
+      <div class="flex items-center space-x-4">
+        <div class="flex items-center space-x-2 text-xs">
+          <span class="w-2.5 h-2.5 rounded-full" :class="wsConnected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'"></span>
+          <span class="text-slate-300" x-text="wsConnected ? 'Live WebSocket Connected' : 'Disconnected'"></span>
+        </div>
+        <button @click="refreshAll()" class="px-3 py-1.5 text-xs font-medium rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition">
+          Refresh
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Notification Toast -->
+  <div x-show="toast.show" x-transition class="fixed bottom-5 right-5 z-50 px-4 py-3 rounded-lg shadow-xl text-sm font-medium border"
+       :class="toast.type === 'error' ? 'bg-rose-950/90 text-rose-200 border-rose-800' : 'bg-cyan-950/90 text-cyan-200 border-cyan-800'">
+    <span x-text="toast.message"></span>
+  </div>
+
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+    <!-- Status Cards -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
+        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Active Profiles</div>
+        <div class="mt-2 text-2xl font-bold text-white flex items-baseline justify-between">
+          <span x-text="status.profiles_count || 0"></span>
+          <span class="text-xs text-slate-500 font-mono">ONVIF Profile S</span>
+        </div>
+      </div>
+
+      <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
+        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">RTSP Clients</div>
+        <div class="mt-2 text-2xl font-bold text-cyan-400 flex items-baseline justify-between">
+          <span x-text="status.rtsp_clients || 0"></span>
+          <span class="text-xs text-slate-500 font-mono">1:N Zero-Copy</span>
+        </div>
+      </div>
+
+      <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
+        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Server Uptime</div>
+        <div class="mt-2 text-2xl font-bold text-emerald-400">
+          <span x-text="formatUptime(status.uptime_seconds)"></span>
+        </div>
+      </div>
+
+      <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
+        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Ports</div>
+        <div class="mt-2 text-xs font-mono space-y-1 text-slate-300">
+          <div>RTSP: <span class="text-cyan-400 font-bold" x-text="status.rtsp_port || 8554"></span></div>
+          <div>HTTP/API: <span class="text-cyan-400 font-bold" x-text="status.http_port || 8080"></span></div>
+          <div>ONVIF Discovery: <span class="text-cyan-400 font-bold" x-text="status.onvif_port || 3702"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Grid: Profiles & PTZ Preview -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+      <!-- Left Column: Profiles CRUD (7 cols) -->
+      <div class="lg:col-span-7 space-y-4">
+        <!-- Server & Auth Settings Card -->
+        <template x-if="config && config.server">
+          <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm space-y-3">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center space-x-2">
+                <span class="text-sm font-semibold text-white">Security & Authentication</span>
+                <span class="text-xs px-2 py-0.5 rounded font-mono font-semibold"
+                      :class="config.server?.auth_type === 'none' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-amber-950 text-amber-400 border border-amber-800'"
+                      x-text="config.server?.auth_type === 'none' ? '認証なし (No Auth)' : (config.server?.auth_type || 'digest').toUpperCase()"></span>
+              </div>
+              <button @click="saveServerAuth()" class="px-3 py-1 text-xs font-semibold rounded bg-cyan-700 hover:bg-cyan-600 text-white transition">
+                Save Auth Mode
+              </button>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+              <div>
+                <label class="block text-slate-400 mb-1">Auth Mode</label>
+                <select x-model="config.server.auth_type" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1 text-white font-medium"
+                        :class="config.server?.auth_type === 'none' ? 'text-emerald-400' : 'text-amber-400'">
+                  <option value="none">認証なし (No Auth - Free access)</option>
+                  <option value="digest">Digest (RFC 7616/2617)</option>
+                  <option value="basic">Basic (RFC 7617)</option>
+                </select>
+              </div>
+              <div x-show="config.server?.auth_type !== 'none'">
+                <label class="block text-slate-400 mb-1">User</label>
+                <input type="text" x-model="config.server.auth_user" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1 text-white font-mono">
+              </div>
+              <div x-show="config.server?.auth_type !== 'none'">
+                <label class="block text-slate-400 mb-1">Password</label>
+                <input type="text" x-model="config.server.auth_pass" class="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1 text-white font-mono">
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <div class="flex items-center justify-between">
+          <h2 class="text-base font-semibold text-white flex items-center space-x-2">
+            <span>Video & Audio Profiles</span>
+            <span class="text-xs font-normal text-slate-400">(Hot-Reload with SIGTERM/Kill)</span>
+          </h2>
+        </div>
+
+        <div class="space-y-4">
+          <template x-for="(profile, idx) in config.profiles" :key="profile.token">
+            <div class="p-5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm space-y-4">
+              <!-- Header -->
+              <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div class="flex items-center space-x-3">
+                  <span class="px-2 py-1 text-xs font-mono font-semibold rounded bg-cyan-950 text-cyan-400 border border-cyan-800" x-text="profile.token"></span>
+                  <input type="text" x-model="profile.name" class="bg-slate-950 border border-slate-700 rounded px-2.5 py-1 text-sm font-medium text-white focus:outline-none focus:border-cyan-500">
+                </div>
+                <div class="text-xs font-mono text-slate-400">
+                  rtsp://127.0.0.1:<span x-text="status.rtsp_port || 8554"></span>/live/<span x-text="profile.token"></span>
+                </div>
+              </div>
+
+              <!-- Form Fields -->
+              <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                <div>
+                  <label class="block text-slate-400 mb-1">Resolution</label>
+                  <div class="flex items-center space-x-1">
+                    <input type="number" x-model.number="profile.video.resolution.width" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center">
+                    <span class="text-slate-500">x</span>
+                    <input type="number" x-model.number="profile.video.resolution.height" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center">
+                  </div>
+                </div>
+
+                <div>
+                  <label class="block text-slate-400 mb-1">FPS / GOP</label>
+                  <div class="flex items-center space-x-1">
+                    <input type="number" x-model.number="profile.video.framerate" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center" title="FPS">
+                    <span class="text-slate-500">/</span>
+                    <input type="number" x-model.number="profile.video.gop_size" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center" title="GOP">
+                  </div>
+                </div>
+
+                <div>
+                  <label class="block text-slate-400 mb-1">Codec</label>
+                  <select x-model="profile.video.codec" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white">
+                    <option value="H264">H.264 (AVC)</option>
+                    <option value="H265">H.265 (HEVC)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="block text-slate-400 mb-1">Bitrate Mode</label>
+                  <select x-model="profile.video.bitrate_mode" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white font-medium"
+                          :class="profile.video.bitrate_mode === 'CBR' ? 'text-amber-400' : 'text-cyan-400'">
+                    <option value="CBR">CBR (Constant)</option>
+                    <option value="VBR">VBR (Variable)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="block text-slate-400 mb-1">Max Bitrate (kbps)</label>
+                  <input type="number" x-model.number="profile.video.bitrate_limit_kbps" step="500" min="200" max="20000" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center">
+                </div>
+
+                <div>
+                  <label class="block text-slate-400 mb-1">Audio Mode</label>
+                  <select x-model="profile.audio.mode" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white">
+                    <option value="time_signal">時報 (Beep Signal)</option>
+                    <option value="silent">無音 (Silent)</option>
+                    <option value="">OFF (Disabled)</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Action button -->
+              <div class="flex items-center justify-end pt-2 border-t border-slate-800">
+                <button @click="saveProfile(profile.token, profile)"
+                        :disabled="Boolean(saving[profile.token])"
+                        class="px-4 py-1.5 text-xs font-semibold rounded-lg text-white transition flex items-center space-x-1.5 shadow-lg"
+                        :class="Boolean(saving[profile.token]) ? 'bg-slate-700 opacity-60 cursor-not-allowed' : 'bg-cyan-600 hover:bg-cyan-500 shadow-cyan-950 cursor-pointer'">
+                  <span x-text="Boolean(saving[profile.token]) ? 'Saving & Restarting...' : 'Save & Hot-Reload'"></span>
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- Right Column: PTZ & Snapshot Preview (5 cols) -->
+      <div class="lg:col-span-5 space-y-4">
+        <h2 class="text-base font-semibold text-white flex items-center justify-between">
+          <span>PTZ Radar & Live Preview</span>
+          <span class="text-xs font-mono" :class="ptz.is_moving ? 'text-amber-400 animate-pulse' : 'text-slate-500'" x-text="ptz.is_moving ? 'MOVING' : 'IDLE'"></span>
+        </h2>
+
+        <!-- PTZ Radar SVG Screen -->
+        <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm flex flex-col items-center space-y-4">
+          <div class="relative w-64 h-64 bg-slate-950 rounded-full border border-cyan-500/30 shadow-inner flex items-center justify-center overflow-hidden">
+            <!-- Concentric Radar Rings -->
+            <svg class="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 200 200">
+              <circle cx="100" cy="100" r="90" fill="none" stroke="#0891b2" stroke-width="1" stroke-opacity="0.2" />
+              <circle cx="100" cy="100" r="60" fill="none" stroke="#0891b2" stroke-width="1" stroke-opacity="0.3" />
+              <circle cx="100" cy="100" r="30" fill="none" stroke="#0891b2" stroke-width="1" stroke-opacity="0.4" />
+              <!-- Radar cross line -->
+              <line x1="10" y1="100" x2="190" y2="100" stroke="#0891b2" stroke-width="1" stroke-opacity="0.3" stroke-dasharray="2 2" />
+              <line x1="100" y1="10" x2="100" y2="190" stroke="#0891b2" stroke-width="1" stroke-opacity="0.3" stroke-dasharray="2 2" />
+
+              <!-- Sweeping Radar Beam -->
+              <line x1="100" y1="100" x2="190" y2="100" stroke="#22d3ee" stroke-width="1.5" stroke-opacity="0.6">
+                <animateTransform attributeName="transform" type="rotate" from="0 100 100" to="360 100 100" dur="4s" repeatCount="indefinite" />
+              </line>
+            </svg>
+
+            <!-- Dynamic Camera Pointer Position -->
+            <!-- pan: -1..1 -> cx: 20..180, tilt: -1..1 -> cy: 180..20 (inverted) -->
+            <svg class="absolute inset-0 w-full h-full pointer-events-none transition-all duration-150" viewBox="0 0 200 200">
+              <g :transform="`translate(${100 + ptz.pan * 75}, ${100 - ptz.tilt * 75}) scale(${1 + ptz.zoom * 0.8})`">
+                <circle cx="0" cy="0" r="8" fill="#06b6d4" fill-opacity="0.4" stroke="#22d3ee" stroke-width="2" />
+                <circle cx="0" cy="0" r="3" fill="#ffffff" />
+                <!-- Field of View cone -->
+                <polygon points="-12,-16 0,-4 12,-16" fill="#22d3ee" fill-opacity="0.3" />
+              </g>
+            </svg>
+
+            <div class="absolute bottom-2 text-[10px] font-mono text-cyan-400/80">
+              Pan: <span x-text="ptz.pan.toFixed(2)"></span> | Tilt: <span x-text="ptz.tilt.toFixed(2)"></span> | Zoom: <span x-text="ptz.zoom.toFixed(2)"></span>
+            </div>
+          </div>
+
+          <!-- D-Pad Controls -->
+          <div class="flex flex-col items-center space-y-1.5">
+            <button @click="nudgePTZ(0, 0.2)" class="w-10 h-10 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold border border-slate-700">▲</button>
+            <div class="flex items-center space-x-1.5">
+              <button @click="nudgePTZ(-0.2, 0)" class="w-10 h-10 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold border border-slate-700">◀</button>
+              <button @click="resetPTZ()" class="w-10 h-10 rounded bg-cyan-900 hover:bg-cyan-800 text-cyan-200 text-xs font-bold border border-cyan-700">●</button>
+              <button @click="nudgePTZ(0.2, 0)" class="w-10 h-10 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold border border-slate-700">▶</button>
+            </div>
+            <button @click="nudgePTZ(0, -0.2)" class="w-10 h-10 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold border border-slate-700">▼</button>
+          </div>
+
+          <!-- Zoom Slider -->
+          <div class="w-full px-4 space-y-1">
+            <div class="flex justify-between text-xs text-slate-400">
+              <span>Zoom (1.0x - 2.0x)</span>
+              <span class="font-mono text-cyan-400" x-text="`${(1.0 + ptz.zoom).toFixed(1)}x`"></span>
+            </div>
+            <input type="range" min="0" max="1" step="0.05" x-model.number="ptz.zoom" @input="updatePTZPosition()" class="w-full accent-cyan-500">
+          </div>
+        </div>
+
+        <!-- Live Snapshot Card -->
+        <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-medium text-slate-400">Snapshot Stream</span>
+            <button @click="refreshSnapshot()" class="text-xs text-cyan-400 hover:underline">Reload Frame</button>
+          </div>
+          <div class="aspect-video bg-black rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center relative">
+            <img :src="snapshotUrl" alt="Live Snapshot" class="w-full h-full object-cover">
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+  </main>
+
+  <script>
+    function mockCamApp() {
+      return {
+        status: {},
+        config: {
+          server: {
+            auth_type: 'digest',
+            auth_user: 'admin',
+            auth_pass: 'admin1234',
+            rtsp_port: 8554,
+            http_port: 8080,
+            onvif_port: 3702,
+            device_info: {}
+          },
+          profiles: [],
+          ptz: { pan: 0, tilt: 0, zoom: 0 }
+        },
+        ptz: { pan: 0, tilt: 0, zoom: 0, is_moving: false },
+        saving: { Profile_1: false, Profile_2: false },
+        wsConnected: false,
+        ws: null,
+        snapshotUrl: '/api/snapshot/Profile_1?t=' + Date.now(),
+        toast: { show: false, message: '', type: 'success' },
+
+        init() {
+          this.refreshAll();
+          this.connectWebSocket();
+          setInterval(() => this.refreshSnapshot(), 3000);
+          setInterval(() => this.fetchStatus(), 5000);
+        },
+
+        showToast(message, type = 'success') {
+          this.toast = { show: true, message, type };
+          setTimeout(() => { this.toast.show = false; }, 3000);
+        },
+
+        async refreshAll() {
+          await this.fetchStatus();
+          await this.fetchConfig();
+          this.refreshSnapshot();
+        },
+
+        async fetchStatus() {
+          try {
+            const res = await fetch('/api/status');
+            if (res.ok) this.status = await res.json();
+          } catch (e) {
+            console.error(e);
+          }
+        },
+
+        async fetchConfig() {
+          try {
+            const res = await fetch('/api/config');
+            if (res.ok) this.config = await res.json();
+          } catch (e) {
+            console.error(e);
+          }
+        },
+
+        async saveProfile(token, profile) {
+          this.saving = { ...this.saving, [token]: true };
+          try {
+            const res = await fetch(`/api/profiles/${token}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(profile),
+            });
+            if (res.ok) {
+              this.showToast(`Profile '${token}' updated and restarted!`);
+              await this.fetchConfig();
+            } else {
+              this.showToast(`Failed to update profile: ${await res.text()}`, 'error');
+            }
+          } catch (e) {
+            this.showToast(e.message, 'error');
+          } finally {
+            this.saving = { ...this.saving, [token]: false };
+          }
+        },
+
+        async saveServerAuth() {
+          try {
+            const res = await fetch('/api/config', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ server: this.config.server }),
+            });
+            if (res.ok) {
+              const mode = this.config.server.auth_type === 'none' ? '認証なし (No Auth)' : this.config.server.auth_type;
+              this.showToast(`認証モードを更新しました: ${mode}`);
+              await this.refreshAll();
+            } else {
+              this.showToast('認証設定の保存に失敗しました: ' + (await res.text()), 'error');
+            }
+          } catch (e) {
+            this.showToast(e.message, 'error');
+          }
+        },
+
+        connectWebSocket() {
+          const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const wsUrl = `${protocol}//${window.location.host}/ws`;
+          this.ws = new WebSocket(wsUrl);
+
+          this.ws.onopen = () => {
+            this.wsConnected = true;
+          };
+
+          this.ws.onmessage = (event) => {
+            try {
+              const data = JSON.parse(event.data);
+              if (data.type === 'ptz') {
+                this.ptz.pan = data.pan;
+                this.ptz.tilt = data.tilt;
+                this.ptz.zoom = data.zoom;
+                this.ptz.is_moving = data.is_moving;
+              }
+            } catch (e) {
+              console.error(e);
+            }
+          };
+
+          this.ws.onclose = () => {
+            this.wsConnected = false;
+            setTimeout(() => this.connectWebSocket(), 2000);
+          };
+        },
+
+        nudgePTZ(deltaPan, deltaTilt) {
+          this.ptz.pan = Math.max(-1, Math.min(1, this.ptz.pan + deltaPan));
+          this.ptz.tilt = Math.max(-1, Math.min(1, this.ptz.tilt + deltaTilt));
+          this.updatePTZPosition();
+        },
+
+        resetPTZ() {
+          this.ptz.pan = 0;
+          this.ptz.tilt = 0;
+          this.ptz.zoom = 0;
+          this.updatePTZPosition();
+        },
+
+        updatePTZPosition() {
+          fetch('/api/ptz', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'absolute',
+              pan: this.ptz.pan,
+              tilt: this.ptz.tilt,
+              zoom: this.ptz.zoom,
+            }),
+          });
+        },
+
+        refreshSnapshot() {
+          const token = (this.config.profiles && this.config.profiles.length > 0) ? this.config.profiles[0].token : 'Profile_1';
+          this.snapshotUrl = `/api/snapshot/${token}?t=${Date.now()}`;
+        },
+
+        formatUptime(sec) {
+          if (!sec) return '0s';
+          const h = Math.floor(sec / 3600);
+          const m = Math.floor((sec % 3600) / 60);
+          const s = Math.floor(sec % 60);
+          if (h > 0) return `${h}h ${m}m ${s}s`;
+          if (m > 0) return `${m}m ${s}s`;
+          return `${s}s`;
+        }
+      };
+    }
+  </script>
+</body>
+</html>

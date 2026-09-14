@@ -1,0 +1,17 @@
+services:
+  mockcam:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mockcam:latest
+    container_name: mockcam
+    restart: unless-stopped
+    ports:
+      - "8554:8554"       # RTSP Server
+      - "8080:8080"       # Web Dashboard, REST API, SOAP HTTP
+      - "3702:3702/udp"   # ONVIF WS-Discovery Multicast
+    volumes:
+      - ./config:/config
+      - ./media:/media
+    environment:
+      - TZ=UTC
