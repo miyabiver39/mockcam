@@ -10,7 +10,12 @@ import (
 )
 
 // BuildFFmpegArgs generates the argument slice for FFmpeg based on profile configuration.
-func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int) []string {
+func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int, httpPort ...int) []string {
+	hPort := 8080
+	if len(httpPort) > 0 && httpPort[0] > 0 {
+		hPort = httpPort[0]
+	}
+
 	var args []string
 
 	// Global options: hide banner, loglevel warning, force timestamp generation & zero input latency
@@ -50,9 +55,9 @@ func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int) []string {
 		case "smptebars":
 			baseFilter = fmt.Sprintf("smptebars=size=%dx%d:rate=%d", width, height, fps)
 		case "allrgb":
-			baseFilter = fmt.Sprintf("allrgb=size=%dx%d:rate=%d", width, height, fps)
+			baseFilter = fmt.Sprintf("allrgb=rate=%d,scale=%d:%d", fps, width, height)
 		case "mptestsrc":
-			baseFilter = fmt.Sprintf("mptestsrc=rate=%d:max_rate=%d,scale=%d:%d", fps, fps, width, height)
+			baseFilter = fmt.Sprintf("mptestsrc=rate=%d,scale=%d:%d", fps, width, height)
 		default: // testsrc2
 			baseFilter = fmt.Sprintf("testsrc2=size=%dx%d:rate=%d", width, height, fps)
 		}
@@ -70,9 +75,9 @@ func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int) []string {
 			filterParts = append(filterParts, fmt.Sprintf("drawbox=x='(w-160)*(0.5+0.5*sin(t*1.5))':y=60:w=160:h=120:color=red@0.8:t=4"))
 		}
 
-		// Real-time ISO 8601 clock overlay with PTS milliseconds
+		// Real-time ISO 8601 clock overlay with millisecond precision (%3N)
 		if profile.Video.ShowClock || profile.Video.OsdText == "" {
-			filterParts = append(filterParts, "drawtext=text='%{localtime\\:%Y-%m-%dT%H\\\\\\:%M\\\\\\:%S%z}':x=(w-tw)/2:y=h-th-20:fontsize=32:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=5")
+			filterParts = append(filterParts, "drawtext=text='%{localtime\\:%Y-%m-%dT%H\\\\\\:%M\\\\\\:%S.%3N%z}':x=(w-tw)/2:y=h-th-20:fontsize=32:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=5")
 		}
 
 		// Custom OSD text overlay
@@ -95,18 +100,27 @@ func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int) []string {
 		if sampleRate <= 0 {
 			sampleRate = 44100
 		}
-		var audioFilter string
-		switch strings.ToLower(profile.Audio.Mode) {
+		audioMode := strings.ToLower(strings.TrimSpace(profile.Audio.Mode))
+		switch audioMode {
+		case "time_signal_ja", "time_signal_en":
+			lang := "ja"
+			if audioMode == "time_signal_en" {
+				lang = "en"
+			}
+			args = append(args, "-re", "-f", "s16le", "-ar", "22050", "-ac", "1", "-i", fmt.Sprintf("http://127.0.0.1:%d/api/audio/timesignal?lang=%s", hPort, lang))
 		case "time_signal":
-			audioFilter = fmt.Sprintf("sine=frequency=880:beep_factor=4:r=%d,asetpts=PTS-STARTPTS", sampleRate)
+			audioFilter := fmt.Sprintf("sine=frequency=880:beep_factor=4:r=%d,asetpts=PTS-STARTPTS", sampleRate)
+			args = append(args, "-re", "-f", "lavfi", "-i", audioFilter)
 		case "noise":
-			audioFilter = fmt.Sprintf("anoisesrc=sample_rate=%d:amplitude=0.05,asetpts=PTS-STARTPTS", sampleRate)
+			audioFilter := fmt.Sprintf("anoisesrc=sample_rate=%d:amplitude=0.05,asetpts=PTS-STARTPTS", sampleRate)
+			args = append(args, "-re", "-f", "lavfi", "-i", audioFilter)
 		case "chime":
-			audioFilter = fmt.Sprintf("sine=frequency=1046.5:beep_factor=2:r=%d,asetpts=PTS-STARTPTS", sampleRate)
+			audioFilter := fmt.Sprintf("sine=frequency=1046.5:beep_factor=2:r=%d,asetpts=PTS-STARTPTS", sampleRate)
+			args = append(args, "-re", "-f", "lavfi", "-i", audioFilter)
 		default:
-			audioFilter = fmt.Sprintf("anullsrc=channel_layout=stereo:sample_rate=%d,asetpts=PTS-STARTPTS", sampleRate)
+			audioFilter := fmt.Sprintf("anullsrc=channel_layout=stereo:sample_rate=%d,asetpts=PTS-STARTPTS", sampleRate)
+			args = append(args, "-re", "-f", "lavfi", "-i", audioFilter)
 		}
-		args = append(args, "-re", "-f", "lavfi", "-i", audioFilter)
 	}
 
 	// 3. Video Encoding & GOP

@@ -1,7 +1,7 @@
 package config
 
 // AppVersion represents the current software release version.
-const AppVersion = "1.2.1"
+const AppVersion = "1.3.0"
 
 // Resolution defines video width and height.
 type Resolution struct {
@@ -18,11 +18,11 @@ type VideoConfig struct {
 	BitrateMode      string     `json:"bitrate_mode"` // "CBR" or "VBR"
 	BitrateLimitKbps int        `json:"bitrate_limit_kbps"`
 	Quality          float64    `json:"quality"`
-	Pattern          string     `json:"pattern,omitempty"`           // "testsrc2", "smptebars", "allrgb", "mptestsrc"
-	OsdText          string     `json:"osd_text,omitempty"`          // Custom OSD text overlay
-	ShowClock        bool       `json:"show_clock"`                  // Whether to display clock overlay
-	EnableNoise      bool       `json:"enable_noise"`                // Adds camera sensor grain/noise
-	EnableMotionBox  bool       `json:"enable_motion_box"`           // Draws moving bounding box for VMS motion detection
+	Pattern          string     `json:"pattern,omitempty"`  // "testsrc2", "smptebars", "allrgb", "mptestsrc"
+	OsdText          string     `json:"osd_text,omitempty"` // Custom OSD text overlay
+	ShowClock        bool       `json:"show_clock"`         // Whether to display clock overlay
+	EnableNoise      bool       `json:"enable_noise"`       // Adds camera sensor grain/noise
+	EnableMotionBox  bool       `json:"enable_motion_box"`  // Draws moving bounding box for VMS motion detection
 }
 
 // AudioConfig defines audio stream settings.

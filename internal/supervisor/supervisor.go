@@ -89,7 +89,8 @@ func (s *Supervisor) runWorkerLoop(ctx context.Context, w *profileWorker, rtspPo
 			return
 		}
 
-		args := BuildFFmpegArgs(w.profile, rtspPort)
+		httpPort := s.cfgMgr.Get().Server.HTTPPort
+		args := BuildFFmpegArgs(w.profile, rtspPort, httpPort)
 		cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 		var stderrBuf bytes.Buffer
 		cmd.Stdout = nil

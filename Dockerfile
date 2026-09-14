@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o mockcam cmd/mockcam/ma
 # Stage 2: Runtime
 FROM alpine:3.20
 
-RUN apk add --no-cache ffmpeg tzdata ca-certificates ttf-dejavu fontconfig
+RUN apk add --no-cache ffmpeg tzdata ca-certificates ttf-dejavu fontconfig espeak-ng
 
 WORKDIR /app
 COPY --from=builder /build/mockcam /app/mockcam

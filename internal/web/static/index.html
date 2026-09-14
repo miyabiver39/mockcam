@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MockCam - Virtual Network Camera Control & Diagnostic Suite</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="shortcut icon" href="/favicon.ico">
   <script src="https://cdn.tailwindcss.com"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
   <script>
@@ -30,13 +32,11 @@
   <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between">
       <div class="flex items-center space-x-3">
-        <div class="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400 font-bold text-lg">
-          📹
-        </div>
+        <img src="/favicon.png" alt="MockCam Icon" class="w-8 h-8 rounded-lg border border-cyan-500/40 shadow-sm object-cover">
         <div>
           <h1 class="text-lg font-bold text-white tracking-wide flex items-center space-x-2">
             <span>MockCam</span>
-            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" x-text="status.version ? (status.version.startsWith('v') ? status.version : 'v' + status.version) : 'v1.2.1'"></span>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" x-text="status.version ? (status.version.startsWith('v') ? status.version : 'v' + status.version) : 'v1.3.0'"></span>
           </h1>
           <p class="text-xs text-slate-400" x-text="status.model || 'MC-Pro-S'"></p>
         </div>
@@ -288,7 +288,9 @@
                 <div>
                   <label class="block text-slate-400 mb-1" x-text="t('label_audio_mode')"></label>
                   <select x-model="profile.audio.mode" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white">
-                    <option value="time_signal">時報 (Beep Signal 880Hz)</option>
+                    <option value="time_signal_ja" x-text="t('opt_audio_timesignal_ja')">時報117 (日本語音声)</option>
+                    <option value="time_signal_en" x-text="t('opt_audio_timesignal_en')">Time Signal 117 (English Voice)</option>
+                    <option value="time_signal" x-text="t('opt_audio_timesignal_beep')">時報 (Beep Signal 880Hz)</option>
                     <option value="noise">White Noise</option>
                     <option value="chime">Chime Bell Tone</option>
                     <option value="silent">無音 (Silent)</option>
@@ -392,6 +394,7 @@
               <button @click="nudgePTZ(0.2, 0)" class="w-10 h-10 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold border border-slate-700">▶</button>
             </div>
             <button @click="nudgePTZ(0, -0.2)" class="w-10 h-10 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold border border-slate-700">▼</button>
+            <div class="text-[10px] text-slate-500 font-mono text-center pt-1">Keyboard: W/A/S/D or Arrows, +/- Zoom, Space Home</div>
           </div>
 
           <!-- Zoom Slider -->
@@ -421,11 +424,18 @@
           </div>
         </div>
 
-        <!-- Live Snapshot Card with Refresh Rate Selector -->
+        <!-- Live Preview Card (Snapshot or Live MJPEG Video Stream) -->
         <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm space-y-3">
           <div class="flex items-center justify-between text-xs">
-            <span class="font-medium text-slate-400">Live Snapshot</span>
-            <div class="flex items-center space-x-2">
+            <div class="flex items-center space-x-1 bg-slate-950 p-0.5 rounded border border-slate-800">
+              <button @click="previewMode = 'mjpeg'" :class="previewMode === 'mjpeg' ? 'bg-cyan-700 text-white font-bold' : 'text-slate-400 hover:text-white'" class="px-2 py-0.5 rounded transition text-[11px]">
+                🔴 Live Video (MJPEG)
+              </button>
+              <button @click="previewMode = 'snapshot'" :class="previewMode === 'snapshot' ? 'bg-cyan-700 text-white font-bold' : 'text-slate-400 hover:text-white'" class="px-2 py-0.5 rounded transition text-[11px]">
+                📸 Snapshot
+              </button>
+            </div>
+            <div class="flex items-center space-x-2" x-show="previewMode === 'snapshot'">
               <select x-model.number="snapshotInterval" @change="updateSnapshotTimer()" class="bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-slate-300">
                 <option :value="1000">1s interval</option>
                 <option :value="3000">3s interval</option>
@@ -436,7 +446,12 @@
             </div>
           </div>
           <div class="aspect-video bg-black rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center relative">
-            <img :src="snapshotUrl" alt="Live Snapshot" class="w-full h-full object-cover">
+            <template x-if="previewMode === 'mjpeg'">
+              <img :src="liveMjpegUrl" alt="Live Video Stream" class="w-full h-full object-cover">
+            </template>
+            <template x-if="previewMode === 'snapshot'">
+              <img :src="snapshotUrl" alt="Live Snapshot" class="w-full h-full object-cover">
+            </template>
           </div>
         </div>
 
@@ -642,8 +657,10 @@
         label_video_codec: "映像コーデック",
         label_bitrate_mode: "ビットレート制御",
         label_video_bitrate: "映像ビットレート (kbps)",
-        label_pattern: "テストパターン生成器",
         label_audio_mode: "音声モード",
+        opt_audio_timesignal_ja: "時報117 (日本語音声読み上げ)",
+        opt_audio_timesignal_en: "時報117 (英語音声読み上げ)",
+        opt_audio_timesignal_beep: "時報 (880Hzビープ音)",
         label_audio_codec: "音声コーデック",
         label_audio_bitrate: "音声ビットレート (kbps)",
         label_osd_text: "カスタム OSD 文字重畳",
@@ -688,6 +705,9 @@
         label_video_bitrate: "Video Bitrate (kbps)",
         label_pattern: "Pattern Generator",
         label_audio_mode: "Audio Mode",
+        opt_audio_timesignal_ja: "Time Signal 117 (Japanese Voice)",
+        opt_audio_timesignal_en: "Time Signal 117 (English Voice)",
+        opt_audio_timesignal_beep: "Time Signal (880Hz Beep)",
         label_audio_codec: "Audio Codec",
         label_audio_bitrate: "Audio Bitrate (kbps)",
         label_osd_text: "Custom OSD Text Overlay",
@@ -997,6 +1017,8 @@
         isLogPaused: false,
         wsConnected: false,
         ws: null,
+        previewMode: 'mjpeg',
+        liveMjpegUrl: '/api/mjpeg/Profile_1',
         snapshotUrl: '/api/snapshot/Profile_1?t=' + Date.now(),
         snapshotInterval: 3000,
         snapshotTimer: null,
@@ -1010,6 +1032,7 @@
           this.fetchClients();
           this.fetchPresets();
           this.updateSnapshotTimer();
+          this.setupKeyboardPTZ();
           setInterval(() => this.fetchStatus(), 3000);
           setInterval(() => this.fetchClients(), 5000);
         },
@@ -1332,9 +1355,24 @@
           }
         },
 
+        setupKeyboardPTZ() {
+          window.addEventListener('keydown', (e) => {
+            if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+            const key = e.key.toLowerCase();
+            if (key === 'w' || key === 'arrowup') { e.preventDefault(); this.nudgePTZ(0, 0.1); }
+            else if (key === 's' || key === 'arrowdown') { e.preventDefault(); this.nudgePTZ(0, -0.1); }
+            else if (key === 'a' || key === 'arrowleft') { e.preventDefault(); this.nudgePTZ(-0.1, 0); }
+            else if (key === 'd' || key === 'arrowright') { e.preventDefault(); this.nudgePTZ(0.1, 0); }
+            else if (key === '+' || key === '=') { e.preventDefault(); this.ptz.zoom = Math.min(1.0, this.ptz.zoom + 0.05); this.updatePTZPosition(); }
+            else if (key === '-' || key === '_') { e.preventDefault(); this.ptz.zoom = Math.max(0.0, this.ptz.zoom - 0.05); this.updatePTZPosition(); }
+            else if (key === ' ') { e.preventDefault(); this.resetPTZ(); }
+          });
+        },
+
         refreshSnapshot() {
           const token = (this.config.profiles && this.config.profiles.length > 0) ? this.config.profiles[0].token : 'Profile_1';
           this.snapshotUrl = `/api/snapshot/${token}?t=${Date.now()}`;
+          this.liveMjpegUrl = `/api/mjpeg/${token}?t=${Date.now()}`;
         },
 
         buildRtspUrl(token) {

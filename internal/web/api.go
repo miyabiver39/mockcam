@@ -1,12 +1,14 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/jpeg"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"mockcam/internal/onvif"
 	"mockcam/internal/rtsp"
 	"mockcam/internal/supervisor"
+	"mockcam/internal/timesignal"
 )
 
 var upgrader = websocket.Upgrader{
@@ -28,11 +31,12 @@ var upgrader = websocket.Upgrader{
 
 // APIHandler coordinates REST and WebSocket endpoints.
 type APIHandler struct {
-	cfgMgr     *config.Manager
-	supervisor *supervisor.Supervisor
-	rtspServer *rtsp.Server
-	ptz        *onvif.PTZController
-	startTime  time.Time
+	cfgMgr        *config.Manager
+	supervisor    *supervisor.Supervisor
+	rtspServer    *rtsp.Server
+	ptz           *onvif.PTZController
+	timeSignalSvc *timesignal.Service
+	startTime     time.Time
 
 	wsClients map[*websocket.Conn]bool
 	wsMu      sync.Mutex
@@ -46,12 +50,13 @@ func NewAPIHandler(
 	ptzCtrl *onvif.PTZController,
 ) *APIHandler {
 	h := &APIHandler{
-		cfgMgr:     cfgMgr,
-		supervisor: superv,
-		rtspServer: rtspSrv,
-		ptz:        ptzCtrl,
-		startTime:  time.Now(),
-		wsClients:  make(map[*websocket.Conn]bool),
+		cfgMgr:        cfgMgr,
+		supervisor:    superv,
+		rtspServer:    rtspSrv,
+		ptz:           ptzCtrl,
+		timeSignalSvc: timesignal.NewService(),
+		startTime:     time.Now(),
+		wsClients:     make(map[*websocket.Conn]bool),
 	}
 
 	// Hook PTZ position updates to WebSocket broadcaster
@@ -76,6 +81,8 @@ func (h *APIHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/profiles", h.handleProfilesRoot)
 	mux.HandleFunc("/api/profiles/", h.handleProfiles)
 	mux.HandleFunc("/api/snapshot/", h.handleSnapshot)
+	mux.HandleFunc("/api/mjpeg/", h.handleMJPEG)
+	mux.HandleFunc("/api/audio/timesignal", h.timeSignalSvc.HandleAudioStream)
 	mux.HandleFunc("/api/ptz", h.handlePTZ)
 	mux.HandleFunc("/api/ptz/presets", h.handlePTZPresets)
 	mux.HandleFunc("/api/clients", h.handleClients)
@@ -484,12 +491,7 @@ func (h *APIHandler) handlePTZ(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 }
 
-func (h *APIHandler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
-	token := strings.TrimPrefix(r.URL.Path, "/api/snapshot/")
-	if token == "" {
-		token = "Profile_1"
-	}
-
+func (h *APIHandler) renderSnapshotJPEG(token string) []byte {
 	prof, ok := h.cfgMgr.GetProfile(token)
 	width := 640
 	height := 360
@@ -548,9 +550,64 @@ func (h *APIHandler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var buf bytes.Buffer
+	_ = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 80})
+	return buf.Bytes()
+}
+
+func (h *APIHandler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.URL.Path, "/api/snapshot/")
+	if token == "" {
+		token = "Profile_1"
+	}
+	data := h.renderSnapshotJPEG(token)
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	_ = jpeg.Encode(w, img, &jpeg.Options{Quality: 80})
+	_, _ = w.Write(data)
+}
+
+func (h *APIHandler) handleMJPEG(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.URL.Path, "/api/mjpeg/")
+	if token == "" {
+		token = "Profile_1"
+	}
+
+	w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Connection", "close")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	ticker := time.NewTicker(66 * time.Millisecond) // ~15 FPS smooth live video
+	defer ticker.Stop()
+	ctx := r.Context()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			data := h.renderSnapshotJPEG(token)
+			if len(data) == 0 {
+				continue
+			}
+			header := fmt.Sprintf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", len(data))
+			if _, err := io.WriteString(w, header); err != nil {
+				return
+			}
+			if _, err := w.Write(data); err != nil {
+				return
+			}
+			if _, err := io.WriteString(w, "\r\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
 }
 
 // WebSocket handler for real-time PTZ and status push

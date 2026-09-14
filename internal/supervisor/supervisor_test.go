@@ -133,3 +133,45 @@ func TestBuildFFmpegArgsCodecs(t *testing.T) {
 		t.Errorf("expected g726: %s", joinedAV1)
 	}
 }
+
+func TestBuildFFmpegArgsPatternsAndAudio(t *testing.T) {
+	// Test allrgb pattern and time_signal_ja
+	profRGB := config.ProfileConfig{
+		Token: "Profile_RGB",
+		Video: config.VideoConfig{
+			Pattern:    "allrgb",
+			Resolution: config.Resolution{Width: 640, Height: 360},
+			Framerate:  15,
+		},
+		Audio: config.AudioConfig{
+			Enabled: true,
+			Mode:    "time_signal_ja",
+		},
+	}
+	argsRGB := BuildFFmpegArgs(profRGB, 8554, 8080)
+	joinedRGB := strings.Join(argsRGB, " ")
+	if !strings.Contains(joinedRGB, "allrgb=rate=15,scale=640:360") {
+		t.Errorf("expected allrgb with scale filter: %s", joinedRGB)
+	}
+	if !strings.Contains(joinedRGB, ".%3N") {
+		t.Errorf("expected millisecond format .%%3N in clock filter: %s", joinedRGB)
+	}
+	if !strings.Contains(joinedRGB, "http://127.0.0.1:8080/api/audio/timesignal?lang=ja") {
+		t.Errorf("expected time_signal_ja audio stream: %s", joinedRGB)
+	}
+
+	// Test mptestsrc pattern
+	profMP := config.ProfileConfig{
+		Token: "Profile_MP",
+		Video: config.VideoConfig{
+			Pattern:    "mptestsrc",
+			Resolution: config.Resolution{Width: 1280, Height: 720},
+			Framerate:  30,
+		},
+	}
+	argsMP := BuildFFmpegArgs(profMP, 8554)
+	joinedMP := strings.Join(argsMP, " ")
+	if !strings.Contains(joinedMP, "mptestsrc=rate=30,scale=1280:720") {
+		t.Errorf("expected mptestsrc with scale filter: %s", joinedMP)
+	}
+}
