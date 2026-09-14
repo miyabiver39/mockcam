@@ -29,16 +29,19 @@ internal/
   rtsp/                    gortsplib/v5 ベースの RTSP サーバー（server.go）、認証の純粋関数（auth.go）、統計（stats.go）
   onvif/                   SOAP ディスパッチ (server.go)、Device/Media ハンドラ、PTZ 状態機械 (ptz.go)、WS-Discovery
   timesignal/              117 時報の音声生成（phrase / tones / pcm / tts / service に分割、Runner・Synthesizer で外部プロセスを抽象化）
+  frames/                  FFmpeg の MJPEG サイド出力を JPEG に分割（Splitter）し最新フレームを保持（Store）
+  camera/                  アプリケーションコア Controller。REST / WebSocket / MCP が共有する業務ロジックと合成プレビュー
+  mcpserver/               Model Context Protocol サーバー（公式 go-sdk）。ツール/リソースは Controller の薄いラッパー
   licenses/                サードパーティ帰属表示の単一情報源（/api/licenses と README に反映）
-  web/                     HTTP サーバー (server.go)、REST/WS ハンドラ (api_*.go)、埋め込み UI (static/index.html)
-docs/                      REST API 仕様・ONVIF Profile S 仕様（日本語）
+  web/                     HTTP サーバー (server.go)、REST/WS ハンドラ (api_*.go)、OpenAPI/Scalar (api_docs.go)、埋め込み UI (static/index.html)
+docs/                      openapi.yaml（埋め込まれ /openapi.yaml で配信）、REST API 仕様・ONVIF Profile S 仕様（日本語）
 .agents/skills/            ワークスペーススキル（リリース手順、FFmpeg パイプライン、Web UI i18n）
 .github/workflows/ci.yml   gofmt → go vet → go mod tidy → govulncheck → go test -race → Docker multi-arch ビルド & ghcr.io push
 Dockerfile / compose.yml   alpine 3.22 + ffmpeg + Open JTalk + espeak-ng ランタイム
 ```
 
 - Go モジュール名は `mockcam`（`import "mockcam/internal/..."`）。
-- 外部依存は `gortsplib/v5`、`pion/rtp`・`pion/rtcp`、`gorilla/websocket`、`google/uuid` のみ。**新しい依存を追加する前に標準ライブラリで代替できないか検討**し、追加した場合は `internal/licenses/licenses.go` にも登録してください（`licenses_test.go` が go.mod と突き合わせます）。
+- 外部依存は `gortsplib/v5`、`pion/rtp`・`pion/rtcp`、`gorilla/websocket`、`google/uuid`、`modelcontextprotocol/go-sdk`、`go.yaml.in/yaml/v3`（テストのみ）です。**新しい依存を追加する前に標準ライブラリで代替できないか検討**し、追加した場合は `internal/licenses/licenses.go` にも登録してください（`licenses_test.go` が go.mod と突き合わせます）。
 - フロントエンドは `internal/web/static/index.html` 1 ファイル（Tailwind CDN + Alpine.js）。ビルドステップは無く、`go:embed` でバイナリに同梱されます。
 
 ## 3. 開発コマンド
@@ -61,6 +64,8 @@ docker compose up -d --build             # コンテナ起動
   - `web`: `StreamSupervisor` / `StreamServer` / `PTZ` インターフェースを受け取る。`newAPIHandler` でロガー・時報サービスも差し替え可能。
   - `rtsp`: `authorizeRequest` は純粋関数。`CredentialValidator` インターフェースで認証器を差し替え。
   - `onvif`: `BuildProbeMatches` / `IsProbe` / `ProbeMessageID` は純粋関数。SOAP は `httptest` で検証。
+  - `camera`: フェイクの supervisor / rtsp / frames を渡して Controller の業務ロジックを直接テスト。
+  - `mcpserver`: `mcp.NewInMemoryTransports` でクライアントを接続しツール/リソースを検証（`httptest` + `StreamableClientTransport` で HTTP も）。
 - 設定ファイルの既定パス: Linux は `/config/settings.json`、Windows は `./config/settings.json`、環境変数 `CONFIG_PATH` または `-config` フラグで上書き。存在しなければデフォルト設定が自動生成されます。
 - 既定の認証情報は `admin` / `admin1234`（`config.DefaultConfig()`）。
 
@@ -74,6 +79,7 @@ docker compose up -d --build             # コンテナ起動
 - 設定ファイル読み込み時に `FirmwareVersion` は `config.AppVersion` に同期されます。リリース時は `.agents/skills/mockcam-release-and-verify/SKILL.md` のチェックリストに従ってください。
 
 ### FFmpeg ワーカー (`supervisor`)
+- `WithFrameSink` を渡すと FFmpeg の 2 番目の出力（`-map 0:v:0 -an ... -f mjpeg pipe:1`、約 5 fps・幅 1280 px 上限）が stdout に流れ、`frames.Splitter` が JPEG 単位に分割して Store へ publish します。`BuildFFmpegArgsWith` の `PreviewOptions` で制御。
 - プロファイル 1 つにつきワーカー goroutine 1 つ。FFmpeg が落ちたら `restartDelay`（既定 1 秒）後に自動再起動し、`Status()` の `Restarts` が増えます。
 - ホットリロードは `RestartProfile(token)` で **該当プロファイルのみ**停止→再起動します。他プロファイルを止めないでください。
 - 停止手順は `stopWorker`: `SIGTERM` → `stopGrace` → `Kill` → `killGrace`。Windows では `SIGTERM` が効かず `Kill` にフォールバックします。
@@ -99,10 +105,20 @@ docker compose up -d --build             # コンテナ起動
 - `GetSystemDateAndTime` と `GetCapabilities` は認証不要（ONVIF 仕様上の要件）。それ以外は `auth.CheckHTTP` を通します。
 - PTZ は `PTZController` がメモリ上の仮想座標（pan/tilt: -1.0〜1.0、zoom: 0.0〜1.0）を保持し、変更時にリスナー通知と設定永続化を非同期で行います。座標は必ず `clamp` してください。
 
+### アプリケーションコア (`camera.Controller`)
+- 業務ロジック（検証 → 保存 → ストリーム閉塞 → ワーカー再起動、フォールバックなど）は **必ず `camera.Controller` に置き**、Web ハンドラと MCP ツールはそれを呼ぶだけの薄いアダプタにしてください。両者の挙動がずれるのを防ぎます。
+- 失敗は `camera.ErrInvalid` / `ErrNotFound` / `ErrConflict` でラップし、Web は `writeCoreError`（400/404/409）、MCP は `toolErr`（isError 結果）に変換します。
+
 ### Web / API (`web`)
-- ルート登録は `APIHandler.RegisterRoutes`（REST / WS）と `onvif.Server.RegisterRoutes`（SOAP）の 2 箇所。`/` は埋め込み静的ファイル。ハンドラは `api_status.go` / `api_profiles.go` / `api_ptz.go` / `api_media.go` / `api_ws.go` に分かれています。
-- JSON ボディは `readJSON`（1 MiB 上限・未知フィールド拒否）で読み、書き込みは `writeJSON` / `writeError` を使います。プロファイルとサーバー設定は保存前に `config.ValidateProfile` / `config.ValidateServer` を通してください。
-- エンドポイントを追加・変更したら `docs/rest_api.md`、`web_test.go`、`index.html` 側の呼び出しを同時に更新してください。
+- ルート登録は `APIHandler.RegisterRoutes`（REST / WS / OpenAPI）と `onvif.Server.RegisterRoutes`（SOAP）、`Server.Mount`（MCP など追加ハンドラ）の 3 箇所。`/` は埋め込み静的ファイル。ハンドラは `api_status.go` / `api_profiles.go` / `api_ptz.go` / `api_media.go` / `api_ws.go` / `api_docs.go` に分かれています。
+- JSON ボディは `readJSON`（1 MiB 上限・未知フィールド拒否）で読み、書き込みは `writeJSON` / `writeError` を使います。検証は Controller 側で行われます。
+- エンドポイントを追加・変更したら **`docs/openapi.yaml`**（`api_docs_test.go` がルートとの整合を検査）、`docs/rest_api.md`、`web_test.go`、`index.html` 側の呼び出しを同時に更新してください。
+- スナップショット系: `/api/snapshot/{token}` と `/api/mjpeg/{token}` は `frames.Store` のライブフレームを優先し、無ければ合成プレビューにフォールバックします（`X-MockCam-Source` ヘッダー）。フレームは supervisor の `WithFrameSink` 経由で届きます。
+
+### MCP (`mcpserver`)
+- ツールを追加するときは `registerTools` に `mcp.AddTool`（型付き入力/出力）で登録し、`Annotations`（readOnly / idempotent / destructive）を必ず付けてください。`server_test.go` のツール一覧テストにも追加します。
+- 画像を返すツールは `mcp.ImageContent{Data, MIMEType}` を使います（`get_snapshot` を参照）。
+- `-mcp-stdio` では stdout が MCP トランスポートになるため、ログは `log.SetOutput(os.Stderr)` 済み。stdout に書く処理を追加しないでください。
 - 依存ライブラリやランタイムツールを追加したら `internal/licenses/licenses.go` に帰属情報を追加し、README のライセンス表も更新してください（UI の「ℹ️ 情報」モーダルは `/api/licenses` を表示します）。
 - WebSocket は PTZ 座標・ステータス・ログをサーバー push し、クライアントからの PTZ 操作を受け付けます。
 
@@ -113,7 +129,7 @@ docker compose up -d --build             # コンテナ起動
 ## 5. コーディング規約
 
 - Go 標準の書き方に従い、**変更したファイルは `gofmt` を通す**（未変更ファイルの一括整形は別コミットにする）。
-- エクスポートされた型・関数には英語の doc コメントを付ける。コード内コメントは英語、ドキュメント（`README.md`, `docs/`）は日本語。
+- エクスポートされた型・関数には英語の doc コメントを付ける。コード内コメントは英語。`README.md` は英語、`README.jp.md` は日本語で**両方を同期して更新**する。`docs/` の Markdown は日本語、`docs/openapi.yaml` は英語。
 - エラーは `fmt.Errorf("...: %w", err)` でラップし、呼び出し元にコンテキストを渡す。
 - 共有状態は既存の mutex パターン（`mu.Lock()` + `defer Unlock()`、`*Locked` サフィックスの内部メソッド）を踏襲する。
 - goroutine を起動する場合は `context` と `sync.WaitGroup` で必ず停止経路を用意する（`supervisor`, `discovery` が参考実装）。

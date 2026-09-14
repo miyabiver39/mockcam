@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"mockcam/internal/config"
+	"mockcam/internal/frames"
 )
 
 // CommandFactory creates the process for one FFmpeg invocation. It exists so
@@ -34,6 +35,20 @@ func WithCommandFactory(f CommandFactory) Option {
 // WithBinary overrides the FFmpeg executable name/path.
 func WithBinary(name string) Option {
 	return func(s *Supervisor) { s.binary = name }
+}
+
+// WithFrameSink enables the MJPEG preview side output and delivers every
+// decoded JPEG frame to sink (normally a *frames.Store).
+func WithFrameSink(sink frames.Sink) Option {
+	return func(s *Supervisor) {
+		s.frameSink = sink
+		s.preview = DefaultPreview()
+	}
+}
+
+// WithPreview overrides the preview side-output settings.
+func WithPreview(p PreviewOptions) Option {
+	return func(s *Supervisor) { s.preview = p }
 }
 
 // WithTimings overrides the restart/stop delays (mainly to speed up tests).
@@ -71,6 +86,8 @@ type Supervisor struct {
 	cfgMgr     *config.Manager
 	newCommand CommandFactory
 	binary     string
+	frameSink  frames.Sink
+	preview    PreviewOptions
 
 	restartDelay   time.Duration
 	startFailDelay time.Duration
@@ -155,10 +172,17 @@ func (s *Supervisor) runWorkerLoop(ctx context.Context, w *profileWorker, rtspPo
 
 		// The command is built and started outside the lock: cmd.Start writes
 		// cmd.Process, so the handle is only published (under mu) afterwards.
-		args := BuildFFmpegArgs(w.profile, rtspPort, httpPort)
+		preview := s.preview
+		preview.Enabled = preview.Enabled && s.frameSink != nil
+		args := BuildFFmpegArgsWith(w.profile, rtspPort, httpPort, preview)
 		cmd := s.newCommand(ctx, s.binary, args...)
 		var stderrBuf bytes.Buffer
 		cmd.Stdout = nil
+		if preview.Enabled {
+			// exec copies stdout into the splitter and Wait() waits for the copy,
+			// so every frame emitted before exit is delivered.
+			cmd.Stdout = frames.NewSplitter(w.token, s.frameSink)
+		}
 		cmd.Stderr = &stderrBuf
 
 		log.Printf("[supervisor] Starting FFmpeg for profile '%s'...", w.token)

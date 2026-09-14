@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"mockcam/internal/auth"
+	"mockcam/internal/camera"
 	"mockcam/internal/config"
 	"mockcam/internal/onvif"
+	"mockcam/internal/timesignal"
 )
 
 //go:embed static/*
@@ -27,23 +29,41 @@ type Server struct {
 	apiHandler *APIHandler
 	onvifSrv   *onvif.Server
 	httpServer *http.Server
+	mounts     map[string]http.Handler
 }
 
-// NewServer creates a new Web server. superv and rtspSrv may be nil.
+// NewServer creates a new Web server. superv, rtspSrv and frameSrc may be nil.
 func NewServer(
 	cfgMgr *config.Manager,
 	authenticator *auth.Authenticator,
 	superv StreamSupervisor,
 	rtspSrv StreamServer,
 	ptzCtrl PTZ,
+	frameSrc FrameSource,
 	onvifSrv *onvif.Server,
 ) *Server {
+	return NewServerWith(camera.New(cfgMgr, superv, rtspSrv, ptzCtrl, frameSrc, nil), authenticator, onvifSrv, timesignal.NewService())
+}
+
+// NewServerWith creates a Web server around an existing controller so that
+// other transports (MCP) share the same core.
+func NewServerWith(core *camera.Controller, authenticator *auth.Authenticator, onvifSrv *onvif.Server, ts *timesignal.Service) *Server {
 	return &Server{
-		cfgMgr:     cfgMgr,
+		cfgMgr:     core.Config(),
 		auth:       authenticator,
-		apiHandler: NewAPIHandler(cfgMgr, superv, rtspSrv, ptzCtrl),
+		apiHandler: NewAPIHandlerWith(core, ts),
 		onvifSrv:   onvifSrv,
+		mounts:     make(map[string]http.Handler),
 	}
+}
+
+// Core returns the shared controller.
+func (s *Server) Core() *camera.Controller { return s.apiHandler.Core() }
+
+// Mount attaches an additional handler (e.g. the MCP endpoint) at pattern.
+// It must be called before Start.
+func (s *Server) Mount(pattern string, h http.Handler) {
+	s.mounts[pattern] = h
 }
 
 // Handler builds the complete HTTP mux (ONVIF SOAP, REST API, WebSocket,
@@ -56,6 +76,9 @@ func (s *Server) Handler() (http.Handler, error) {
 		s.onvifSrv.RegisterRoutes(mux)
 	}
 	s.apiHandler.RegisterRoutes(mux)
+	for pattern, h := range s.mounts {
+		mux.Handle(pattern, h)
+	}
 
 	staticFS, err := fs.Sub(staticFiles, "static")
 	if err != nil {

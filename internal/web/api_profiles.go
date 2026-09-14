@@ -1,7 +1,6 @@
 package web
 
 import (
-	"log"
 	"net/http"
 	"strings"
 
@@ -12,25 +11,18 @@ import (
 func (h *APIHandler) handleProfilesRoot(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, h.cfgMgr.Get().Profiles)
+		writeJSON(w, http.StatusOK, h.core.Profiles())
 	case http.MethodPost:
 		var newProf config.ProfileConfig
 		if err := readJSON(r, &newProf); err != nil {
 			writeError(w, http.StatusBadRequest, "Invalid JSON: "+err.Error())
 			return
 		}
+		if err := h.core.CreateProfile(newProf); err != nil {
+			writeCoreError(w, err)
+			return
+		}
 		newProf.Token = strings.TrimSpace(newProf.Token)
-		if err := config.ValidateProfile(newProf); err != nil {
-			writeError(w, http.StatusBadRequest, "Invalid profile: "+err.Error())
-			return
-		}
-		if err := h.cfgMgr.AddProfile(newProf); err != nil {
-			writeError(w, http.StatusConflict, "Failed to add profile: "+err.Error())
-			return
-		}
-		if h.supervisor != nil {
-			_ = h.supervisor.RestartProfile(newProf.Token)
-		}
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"status":  "ok",
 			"message": "Profile created",
@@ -51,9 +43,9 @@ func (h *APIHandler) handleProfiles(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		prof, ok := h.cfgMgr.GetProfile(token)
-		if !ok {
-			writeError(w, http.StatusNotFound, "Profile not found")
+		prof, err := h.core.Profile(token)
+		if err != nil {
+			writeCoreError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, prof)
@@ -64,26 +56,11 @@ func (h *APIHandler) handleProfiles(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "Invalid JSON: "+err.Error())
 			return
 		}
-		updated.Token = token // the URL is authoritative
-		if err := config.ValidateProfile(updated); err != nil {
-			writeError(w, http.StatusBadRequest, "Invalid profile: "+err.Error())
+		if err := h.core.UpdateProfile(token, updated); err != nil {
+			writeCoreError(w, err)
 			return
 		}
-		if err := h.cfgMgr.UpdateProfile(token, updated); err != nil {
-			writeError(w, http.StatusNotFound, "Failed to update profile: "+err.Error())
-			return
-		}
-
-		// Close the stream so that players reconnect and receive the new SDP,
-		// then hot-reload only this profile's FFmpeg worker.
-		if h.rtspServer != nil {
-			h.rtspServer.CloseStream(token)
-		}
-		if h.supervisor != nil {
-			if err := h.supervisor.RestartProfile(token); err != nil {
-				log.Printf("[api] Warning: failed to restart FFmpeg for profile '%s': %v", token, err)
-			}
-		}
+		updated.Token = token
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "ok",
 			"message": "Profile updated and restarted",
@@ -91,19 +68,9 @@ func (h *APIHandler) handleProfiles(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case http.MethodDelete:
-		if err := h.cfgMgr.DeleteProfile(token); err != nil {
-			status := http.StatusBadRequest
-			if strings.Contains(err.Error(), "not found") {
-				status = http.StatusNotFound
-			}
-			writeError(w, status, "Failed to delete profile: "+err.Error())
+		if err := h.core.DeleteProfile(token); err != nil {
+			writeCoreError(w, err)
 			return
-		}
-		if h.supervisor != nil {
-			h.supervisor.StopProfile(token)
-		}
-		if h.rtspServer != nil {
-			h.rtspServer.CloseStream(token)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "ok",

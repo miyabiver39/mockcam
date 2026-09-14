@@ -1,12 +1,7 @@
 package web
 
 import (
-	"bytes"
 	"fmt"
-	"image"
-	"image/color"
-	"image/draw"
-	"image/jpeg"
 	"io"
 	"net/http"
 	"strings"
@@ -14,71 +9,16 @@ import (
 )
 
 const (
-	snapshotMaxWidth  = 1280
-	snapshotMaxHeight = 720
-	mjpegFrameDelay   = 66 * time.Millisecond // ~15 fps
+	// syntheticFrameDelay paces the MJPEG stream while no live frame exists.
+	syntheticFrameDelay = 200 * time.Millisecond
+	// liveKeepaliveDelay re-sends the last live frame when the encoder stalls
+	// so that browsers and VMS clients keep the connection open.
+	liveKeepaliveDelay = 2 * time.Second
+
+	// sourceHeader tells clients whether a frame came from the live encoder
+	// or from the synthetic fallback renderer.
+	sourceHeader = "X-MockCam-Source"
 )
-
-// snapshotSize returns the preview size for a profile, capped for browser
-// responsiveness and defaulting to 640x360 when the profile is unknown.
-func snapshotSize(width, height int) (int, int) {
-	if width <= 0 || height <= 0 {
-		return 640, 360
-	}
-	if width > snapshotMaxWidth {
-		return snapshotMaxWidth, snapshotMaxHeight
-	}
-	return width, height
-}
-
-// RenderPreview draws a synthetic preview frame: a dark background tinted
-// by the PTZ state, a grid, and a crosshair offset by pan/tilt.
-func RenderPreview(width, height int, pan, tilt, zoom float64) *image.RGBA {
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-
-	bgR := uint8(24 + int((pan+1.0)*15))
-	bgG := uint8(28 + int((tilt+1.0)*15))
-	bgB := uint8(40 + int(zoom*30))
-	draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{bgR, bgG, bgB, 255}}, image.Point{}, draw.Src)
-
-	gridCol := color.RGBA{60, 70, 90, 255}
-	for x := 0; x < width; x += 40 {
-		for y := 0; y < height; y += 2 {
-			img.Set(x, y, gridCol)
-		}
-	}
-	for y := 0; y < height; y += 40 {
-		for x := 0; x < width; x += 2 {
-			img.Set(x, y, gridCol)
-		}
-	}
-
-	centerX, centerY := width/2, height/2
-	targetX := centerX + int(pan*float64(centerX/2))
-	targetY := centerY - int(tilt*float64(centerY/2))
-	crossCol := color.RGBA{0, 255, 180, 255}
-	for x := targetX - 25; x <= targetX+25; x++ {
-		if x >= 0 && x < width && targetY >= 0 && targetY < height {
-			img.Set(x, targetY, crossCol)
-		}
-	}
-	for y := targetY - 25; y <= targetY+25; y++ {
-		if y >= 0 && y < height && targetX >= 0 && targetX < width {
-			img.Set(targetX, y, crossCol)
-		}
-	}
-	return img
-}
-
-func (h *APIHandler) renderSnapshotJPEG(token string) []byte {
-	prof, _ := h.cfgMgr.GetProfile(token)
-	width, height := snapshotSize(prof.Video.Resolution.Width, prof.Video.Resolution.Height)
-	pan, tilt, zoom, _ := h.ptz.GetStatus()
-
-	var buf bytes.Buffer
-	_ = jpeg.Encode(&buf, RenderPreview(width, height, pan, tilt, zoom), &jpeg.Options{Quality: 80})
-	return buf.Bytes()
-}
 
 func tokenFromPath(path, prefix string) string {
 	token := strings.TrimPrefix(path, prefix)
@@ -88,17 +28,28 @@ func tokenFromPath(path, prefix string) string {
 	return token
 }
 
+// handleSnapshot serves GET /api/snapshot/{token} as a single JPEG — the
+// same URL that ONVIF GetSnapshotUri advertises to VMS clients.
 func (h *APIHandler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		methodNotAllowed(w)
 		return
 	}
-	data := h.renderSnapshotJPEG(tokenFromPath(r.URL.Path, "/api/snapshot/"))
+	data, source := h.core.Snapshot(tokenFromPath(r.URL.Path, "/api/snapshot/"))
 	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set(sourceHeader, source)
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	_, _ = w.Write(data)
 }
 
+// handleMJPEG serves GET /api/mjpeg/{token} as a multipart/x-mixed-replace
+// stream. Live frames are pushed as soon as the encoder produces them; the
+// synthetic preview is streamed at 5 fps until the first live frame arrives.
 func (h *APIHandler) handleMJPEG(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -114,20 +65,44 @@ func (h *APIHandler) handleMJPEG(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=frame")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Connection", "close")
+	if _, _, live := h.core.LiveFrame(token); live {
+		w.Header().Set(sourceHeader, "live")
+	} else {
+		w.Header().Set(sourceHeader, "synthetic")
+	}
 
-	ticker := time.NewTicker(mjpegFrameDelay)
-	defer ticker.Stop()
 	ctx := r.Context()
-
+	var lastSeq uint64
 	for {
-		if err := writeMJPEGFrame(w, h.renderSnapshotJPEG(token)); err != nil {
+		frame, next, live := h.core.LiveFrame(token)
+
+		var data []byte
+		wait := syntheticFrameDelay
+		switch {
+		case live && frame.Seq != lastSeq:
+			data = frame.JPEG
+			lastSeq = frame.Seq
+			wait = liveKeepaliveDelay
+		case live:
+			data = frame.JPEG // keepalive: repeat the last frame
+			wait = liveKeepaliveDelay
+		default:
+			data = h.core.SyntheticSnapshot(token)
+		}
+
+		if err := writeMJPEGFrame(w, data); err != nil {
 			return
 		}
 		flusher.Flush()
+
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-next: // new live frame (nil channel when no store: never fires)
+			timer.Stop()
+		case <-timer.C:
 		}
 	}
 }

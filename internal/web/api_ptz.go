@@ -1,11 +1,8 @@
 package web
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
-
-	"mockcam/internal/config"
 )
 
 type ptzActionRequest struct {
@@ -18,42 +15,28 @@ type ptzActionRequest struct {
 	VelZoom float64 `json:"vel_zoom"`
 }
 
-func (h *APIHandler) ptzStatus(extra map[string]any) map[string]any {
-	pan, tilt, zoom, moving := h.ptz.GetStatus()
-	out := map[string]any{
-		"pan":       pan,
-		"tilt":      tilt,
-		"zoom":      zoom,
-		"is_moving": moving,
-	}
-	for k, v := range extra {
-		out[k] = v
-	}
-	return out
-}
-
 func (h *APIHandler) handlePTZ(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, h.ptzStatus(nil))
+		writeJSON(w, http.StatusOK, h.core.PTZState())
 	case http.MethodPost:
 		var req ptzActionRequest
 		if err := readJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, "Invalid JSON: "+err.Error())
 			return
 		}
-		switch strings.ToLower(req.Action) {
-		case "absolute":
-			h.ptz.AbsoluteMove(req.Pan, req.Tilt, req.Zoom)
-		case "continuous":
-			h.ptz.ContinuousMove(req.VelPan, req.VelTilt, req.VelZoom)
-		case "stop":
-			h.ptz.Stop()
-		default:
-			writeError(w, http.StatusBadRequest, "Unknown action: "+req.Action)
+		state, err := h.core.PTZMove(req.Action, req.Pan, req.Tilt, req.Zoom, req.VelPan, req.VelTilt, req.VelZoom)
+		if err != nil {
+			writeCoreError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, h.ptzStatus(map[string]any{"status": "ok"}))
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":    "ok",
+			"pan":       state.Pan,
+			"tilt":      state.Tilt,
+			"zoom":      state.Zoom,
+			"is_moving": state.IsMoving,
+		})
 	default:
 		methodNotAllowed(w)
 	}
@@ -67,11 +50,7 @@ type presetRequest struct {
 func (h *APIHandler) handlePTZPresets(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		presets := h.cfgMgr.Get().PTZ.Presets
-		if presets == nil {
-			presets = []config.PTZPreset{}
-		}
-		writeJSON(w, http.StatusOK, presets)
+		writeJSON(w, http.StatusOK, h.core.Presets())
 
 	case http.MethodPost:
 		var req presetRequest
@@ -79,45 +58,28 @@ func (h *APIHandler) handlePTZPresets(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "Invalid JSON: "+err.Error())
 			return
 		}
-		presets := h.cfgMgr.Get().PTZ.Presets
-		name := strings.TrimSpace(req.Name)
-
 		switch strings.ToLower(req.Action) {
 		case "save_current":
-			pan, tilt, zoom, _ := h.ptz.GetStatus()
-			if name == "" {
-				name = fmt.Sprintf("Preset_%d", len(presets)+1)
-			}
-			presets = upsertPreset(presets, config.PTZPreset{Name: name, Pan: pan, Tilt: tilt, Zoom: zoom})
-			if err := h.cfgMgr.UpdatePTZPresets(presets); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+			presets, err := h.core.SavePreset(req.Name)
+			if err != nil {
+				writeCoreError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "presets": presets})
-
 		case "goto":
-			for _, p := range presets {
-				if p.Name == name {
-					h.ptz.AbsoluteMove(p.Pan, p.Tilt, p.Zoom)
-					writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "target": p})
-					return
-				}
-			}
-			writeError(w, http.StatusNotFound, "Preset not found")
-
-		case "delete":
-			filtered := make([]config.PTZPreset, 0, len(presets))
-			for _, p := range presets {
-				if p.Name != name {
-					filtered = append(filtered, p)
-				}
-			}
-			if err := h.cfgMgr.UpdatePTZPresets(filtered); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+			target, err := h.core.GotoPreset(req.Name)
+			if err != nil {
+				writeCoreError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "presets": filtered})
-
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "target": target})
+		case "delete":
+			presets, err := h.core.DeletePreset(req.Name)
+			if err != nil {
+				writeCoreError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "presets": presets})
 		default:
 			writeError(w, http.StatusBadRequest, "Unknown action: "+req.Action)
 		}
@@ -125,15 +87,4 @@ func (h *APIHandler) handlePTZPresets(w http.ResponseWriter, r *http.Request) {
 	default:
 		methodNotAllowed(w)
 	}
-}
-
-// upsertPreset replaces a preset with the same name or appends a new one.
-func upsertPreset(presets []config.PTZPreset, p config.PTZPreset) []config.PTZPreset {
-	for i := range presets {
-		if presets[i].Name == p.Name {
-			presets[i] = p
-			return presets
-		}
-	}
-	return append(presets, p)
 }

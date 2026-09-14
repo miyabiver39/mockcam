@@ -67,7 +67,11 @@ To prevent excessive vertical scrolling:
 - Component data comes from `internal/licenses/licenses.go` (single source of truth). Do **not** hard-code library names in the HTML; add new dependencies there and `licenses_test.go` will cross-check `go.mod` and the CDN `<script>` tags.
 - Group headings use the keys `licenses_kind_go|frontend|runtime|tts|font` — add translations for all 7 languages when adding a kind.
 
-## 5. Static Asset References
+## 5. API Reference Links
+
+The footer links to `/api/docs` (Scalar UI rendering `docs/openapi.yaml`) and `/openapi.yaml`; the link label uses the i18n key `link_api_docs`.
+
+## 6. Static Asset References
 
 - Assets reside in `internal/web/static/` and are served at root (`/`):
   - `favicon.png` -> `<link rel="icon" type="image/png" href="/favicon.png">`

@@ -1,6 +1,6 @@
 # REST API & WebSocket 仕様書 (`MockCam`)
 
-本ドキュメントは、MockCam の管理用 REST API および WebSocket リアルタイム通信仕様を記載する。
+本ドキュメントは、MockCam の管理用 REST API および WebSocket リアルタイム通信仕様を記載する。機械可読な定義は [`openapi.yaml`](openapi.yaml)（OpenAPI 3.1）にあり、稼働中のインスタンスでは `/openapi.yaml` で配信、`/api/docs`（Scalar）で閲覧できる。
 
 すべての API はデフォルトでポート `8080`（`server.http_port`）で提供される。管理 API は認証を要求しない（ONVIF SOAP と RTSP のみ `server.auth_type` に従う）。
 
@@ -17,7 +17,7 @@
 
 ```json
 {
-  "version": "1.4.0",
+  "version": "1.5.0",
   "model": "MC-Pro-S",
   "uptime_seconds": 128,
   "profiles_count": 2,
@@ -34,11 +34,14 @@
   "workers": [
     { "token": "Profile_1", "running": true, "restarts": 0, "pid": 225 },
     { "token": "Profile_2", "running": true, "restarts": 1, "pid": 13 }
+  ],
+  "previews": [
+    { "token": "Profile_1", "frames": 41, "last_frame_bytes": 50918, "last_frame_at": "2026-09-15T08:35:42Z" }
   ]
 }
 ```
 
-`workers` は FFmpeg ワーカーの状態（`restarts` は自動再起動回数）。
+`workers` は FFmpeg ワーカーの状態（`restarts` は自動再起動回数）、`previews` はプロファイルごとに受信した JPEG プレビューフレームの統計。
 
 ### 1.2 設定の取得・更新
 `GET /api/config` — `settings.json` 全体を返す。
@@ -65,7 +68,7 @@
 
 ```json
 {
-  "application": { "name": "MockCam", "version": "1.4.0", "license": "MIT", "url": "https://github.com/miyabiver39/mockcam" },
+  "application": { "name": "MockCam", "version": "1.5.0", "license": "MIT", "url": "https://github.com/miyabiver39/mockcam" },
   "components": [
     { "name": "github.com/bluenviron/gortsplib/v5", "version": "v5.6.5", "license": "MIT", "copyright": "...", "url": "...", "kind": "go" },
     { "name": "HTS Voice tohoku-f01 (neutral)", "license": "CC BY 4.0", "kind": "tts", "notes": "This product uses ..." }
@@ -127,11 +130,13 @@
 
 ## 3. 映像プレビュー
 
-### 3.1 スナップショット
-`GET /api/snapshot/{token}` — PTZ 状態を反映した合成 JPEG（`image/jpeg`、`Cache-Control: no-store`）。1080p 以上は 1280x720 に縮小。トークン省略時は `Profile_1`。
+### 3.1 JPEG スナップショット
+`GET /api/snapshot/{token}`（`HEAD` も可）— **実際に RTSP で配信している映像の最新フレーム**を JPEG で返す（`image/jpeg`、`Cache-Control: no-store`）。FFmpeg ワーカーの低レート MJPEG サイド出力から取得し、幅 1280 px を超える場合は縮小。ONVIF `GetSnapshotUri` が返す URL でもある。トークン省略時は `Profile_1`。
+
+ワーカーがまだフレームを出していない間（起動直後、FFmpeg 不在時）は PTZ 状態を反映した合成プレビューを返す。レスポンスヘッダー `X-MockCam-Source` が `live` / `synthetic` のどちらかを示す。
 
 ### 3.2 MJPEG ライブプレビュー
-`GET /api/mjpeg/{token}` — `multipart/x-mixed-replace; boundary=frame` で約 15 fps のプレビューを配信。ブラウザの `<img src>` で直接表示可能。
+`GET /api/mjpeg/{token}` — `multipart/x-mixed-replace; boundary=frame` で実映像を約 5 fps で配信（エンコーダがフレームを出すたびに即時プッシュ、無変化時は 2 秒ごとに直前フレームを再送）。ブラウザの `<img src>` や VMS の MJPEG カメラ入力で直接利用可能。ライブフレームが無い間は合成プレビューを 5 fps で送る。
 
 ### 3.3 時報 PCM ストリーム（内部用）
 `GET /api/audio/timesignal?lang=ja|en` — `audio/l16; rate=48000; channels=1` の無限 PCM ストリーム。`time_signal_ja` / `time_signal_en` モードの FFmpeg ワーカーが音声入力として利用する。
@@ -166,18 +171,22 @@ pan/tilt は `-1.0〜1.0`、zoom は `0.0〜1.0` にクランプされる。`con
 
 ---
 
-## 5. WebSocket (`/ws`)
+## 5. MCP (`/mcp`)
+
+`POST /mcp` — Model Context Protocol（Streamable HTTP トランスポート、JSON-RPC 2.0）。MCP クライアントをこの URL に向けると、REST API と同じ操作をツールとして利用できる（`get_status`, `list_profiles`, `update_profile`, `ptz_move`, `get_snapshot` など 20 種）。リソースは `mockcam://config`, `mockcam://status`, `mockcam://logs`, `mockcam://licenses`, `mockcam://openapi`, `mockcam://snapshot/{token}`。同じサーバーを `mockcam -mcp-stdio` で stdin/stdout でも提供できる（ログは stderr）。
+
+## 6. WebSocket (`/ws`)
 
 * **URL**: `ws://{Host}:{http_port}/ws`
 * 接続直後に現在の PTZ 状態が 1 件送られる。
 
-### 5.1 サーバーからのプッシュ
+### 6.1 サーバーからのプッシュ
 ```json
 { "type": "ptz", "pan": 0.25, "tilt": -0.10, "zoom": 0.50, "is_moving": false }
 { "type": "log", "entry": { "timestamp": "2026-09-15 10:00:00.000", "level": "INFO", "source": "rtsp", "message": "..." } }
 ```
 
-### 5.2 クライアントからの操作
+### 6.2 クライアントからの操作
 ```json
 { "action": "move", "pan": 0.0, "tilt": 0.5, "zoom": 0.2 }   // AbsoluteMove
 { "action": "stop" }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"mockcam/internal/config"
+	"mockcam/internal/frames"
 )
 
 // TestHelperProcess is not a real test: it is re-executed as a child
@@ -19,6 +20,7 @@ import (
 //
 //	HELPER_MODE=sleep  → block until killed (a healthy encoder)
 //	HELPER_MODE=exit   → exit immediately with status 1 (a crashing encoder)
+//	HELPER_MODE=frames → write three fake JPEG frames to stdout, then block
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
 		return
@@ -27,6 +29,13 @@ func TestHelperProcess(t *testing.T) {
 	case "exit":
 		fmt.Fprintln(os.Stderr, "simulated encoder failure")
 		os.Exit(1)
+	case "frames":
+		for i := 0; i < 3; i++ {
+			_, _ = os.Stdout.Write([]byte{0xFF, 0xD8, 0xFF, 0xE0, byte(i), 0xFF, 0xD9})
+		}
+		for {
+			time.Sleep(50 * time.Millisecond)
+		}
 	default:
 		for {
 			time.Sleep(50 * time.Millisecond)
@@ -71,18 +80,19 @@ func (f *fakeFFmpeg) spawnsFor(token string) int {
 	return n
 }
 
-func newTestSupervisor(t *testing.T, mode string) (*Supervisor, *fakeFFmpeg, *config.Manager) {
+func newTestSupervisor(t *testing.T, mode string, extra ...Option) (*Supervisor, *fakeFFmpeg, *config.Manager) {
 	t.Helper()
 	cfgMgr, err := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ff := &fakeFFmpeg{mode: mode}
-	s := NewSupervisor(cfgMgr,
+	opts := append([]Option{
 		WithCommandFactory(ff.factory),
 		WithBinary("ffmpeg"),
 		WithTimings(30*time.Millisecond, 30*time.Millisecond, 100*time.Millisecond, 500*time.Millisecond),
-	)
+	}, extra...)
+	s := NewSupervisor(cfgMgr, opts...)
 	t.Cleanup(s.StopAll)
 	return s, ff, cfgMgr
 }
@@ -267,6 +277,43 @@ func TestSupervisorUsesConfiguredPorts(t *testing.T) {
 	}
 	if !strings.Contains(p1, "http://127.0.0.1:9080/api/audio/timesignal?lang=ja") {
 		t.Fatalf("HTTP port not propagated to the time-signal input: %s", p1)
+	}
+}
+
+func TestSupervisorDeliversPreviewFrames(t *testing.T) {
+	store := frames.NewStore()
+	s, ff, _ := newTestSupervisor(t, "frames", WithFrameSink(store))
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "workers", func() bool { return ff.spawns() == 2 })
+
+	// With a sink configured the preview output is part of the command line.
+	ff.mu.Lock()
+	joined := strings.Join(ff.calls[0], " ")
+	ff.mu.Unlock()
+	if !strings.Contains(joined, "-f mjpeg pipe:1") {
+		t.Fatalf("preview output missing: %s", joined)
+	}
+
+	waitFor(t, "frames from both workers", func() bool {
+		f1, _, ok1 := store.Latest("Profile_1")
+		f2, _, ok2 := store.Latest("Profile_2")
+		return ok1 && ok2 && f1.Seq == 3 && f2.Seq == 3
+	})
+	frame, _, _ := store.Latest("Profile_1")
+	if frame.JPEG[0] != 0xFF || frame.JPEG[1] != 0xD8 || frame.JPEG[len(frame.JPEG)-1] != 0xD9 {
+		t.Fatalf("unexpected frame bytes: %v", frame.JPEG)
+	}
+
+	// Without a sink no preview output is requested.
+	s2, ff2, _ := newTestSupervisor(t, "sleep")
+	_ = s2.Start()
+	waitFor(t, "workers", func() bool { return ff2.spawns() == 2 })
+	ff2.mu.Lock()
+	defer ff2.mu.Unlock()
+	if strings.Contains(strings.Join(ff2.calls[0], " "), "pipe:1") {
+		t.Fatal("preview output should be disabled without a sink")
 	}
 }
 

@@ -26,23 +26,36 @@ func renderSecond(sec int) []int16 {
 	return buf
 }
 
-func TestToneScheduleWithinBlock(t *testing.T) {
-	silent := []int{1, 2, 3, 4, 5, 6, 11, 12, 13, 14, 15, 16, 55, 56}
-	for _, sec := range silent {
-		if level := rms(renderSecond(sec)); level != 0 {
-			t.Errorf("second %d should be silent, rms=%v", sec, level)
+// measureHz estimates the frequency of a tone by counting zero crossings.
+func measureHz(samples []int16, rate int) float64 {
+	crossings := 0
+	for i := 1; i < len(samples); i++ {
+		if (samples[i-1] < 0) != (samples[i] < 0) {
+			crossings++
 		}
 	}
+	return float64(crossings) / (2 * float64(len(samples)) / float64(rate))
+}
 
-	for _, sec := range []int{7, 8, 9, 17, 18, 19, 57, 58, 59} {
-		buf := renderSecond(sec)
-		pip := buf[:testRate*pipDurationMs/1000]
-		after := buf[testRate*(pipDurationMs+50)/1000:]
-		if level := rms(pip); level < 0.1 {
-			t.Errorf("second %d: pip too quiet, rms=%v", sec, level)
-		}
-		if level := rms(after); level != 0 {
-			t.Errorf("second %d: audio after the pip should be silent, rms=%v", sec, level)
+func TestToneScheduleWithinBlock(t *testing.T) {
+	// Every second except the mark carries exactly one 100 ms pip:
+	// "ピ・ポ・ピ・ポ・ピ・ポ・ピ・ピ・ピ／".
+	wantHz := map[int]float64{1: 880, 2: 440, 3: 880, 4: 440, 5: 880, 6: 440, 7: 880, 8: 880, 9: 880}
+	for pos, hz := range wantHz {
+		for _, sec := range []int{pos, pos + 10, pos + 50} {
+			buf := renderSecond(sec)
+			pip := buf[:testRate*pipDurationMs/1000]
+			flat := buf[testRate*pipRampMs/1000 : testRate*(pipDurationMs-pipRampMs)/1000]
+			after := buf[testRate*(pipDurationMs+50)/1000:]
+			if level := rms(pip); level < 0.1 {
+				t.Errorf("second %d: pip too quiet, rms=%v", sec, level)
+			}
+			if got := measureHz(flat, testRate); math.Abs(got-hz) > 10 {
+				t.Errorf("second %d: pip frequency %.0f Hz, want %.0f", sec, got, hz)
+			}
+			if level := rms(after); level != 0 {
+				t.Errorf("second %d: audio after the pip should be silent, rms=%v", sec, level)
+			}
 		}
 	}
 
@@ -59,28 +72,23 @@ func TestToneScheduleWithinBlock(t *testing.T) {
 	}
 }
 
-func TestToneFrequencyIs880Hz(t *testing.T) {
-	buf := renderSecond(7)
-	pip := buf[testRate*pipRampMs/1000 : testRate*(pipDurationMs-pipRampMs)/1000]
-
-	// Count zero crossings in the flat part of the pip: f = crossings / (2 * duration).
-	crossings := 0
-	for i := 1; i < len(pip); i++ {
-		if (pip[i-1] < 0) != (pip[i] < 0) {
-			crossings++
-		}
-	}
-	duration := float64(len(pip)) / testRate
-	freq := float64(crossings) / (2 * duration)
-	if math.Abs(freq-ToneFrequencyHz) > 10 {
+func TestMarkToneIs880Hz(t *testing.T) {
+	buf := renderSecond(0)
+	sustain := buf[testRate*markAttackMs/1000 : testRate*markSustainMs/1000]
+	if freq := measureHz(sustain, testRate); math.Abs(freq-ToneFrequencyHz) > 10 {
 		t.Fatalf("measured %.1f Hz, want %.0f Hz", freq, ToneFrequencyHz)
+	}
+	for pos, want := range map[int]float64{1: 880, 2: 440, 6: 440, 7: 880, 9: 880} {
+		if got := pipFrequency(pos); got != want {
+			t.Errorf("pipFrequency(%d) = %v, want %v", pos, got, want)
+		}
 	}
 }
 
 func TestTonesHaveNoClicks(t *testing.T) {
 	// The first and last sample of every tone must be (near) zero and the
 	// envelope must never jump by more than a small step between samples.
-	for _, sec := range []int{0, 7} {
+	for _, sec := range []int{0, 2, 7} {
 		buf := renderSecond(sec)
 		if buf[0] != 0 {
 			t.Errorf("second %d: first sample = %d, want 0", sec, buf[0])

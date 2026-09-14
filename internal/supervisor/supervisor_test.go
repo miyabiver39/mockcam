@@ -175,3 +175,39 @@ func TestBuildFFmpegArgsPatternsAndAudio(t *testing.T) {
 		t.Errorf("expected mptestsrc with scale filter: %s", joinedMP)
 	}
 }
+
+func TestBuildFFmpegArgsPreviewOutput(t *testing.T) {
+	prof := config.DefaultConfig().Profiles[0]
+
+	withPreview := strings.Join(BuildFFmpegArgs(prof, 8554, 8080), " ")
+	for _, want := range []string{
+		"-f rtsp rtsp://127.0.0.1:8554/live/Profile_1",
+		"-map 0:v:0 -an",
+		"scale=w='min(1280,iw)':h=-2",
+		"-r 5 -c:v mjpeg -q:v 5 -pix_fmt yuvj420p -f mjpeg pipe:1",
+	} {
+		if !strings.Contains(withPreview, want) {
+			t.Errorf("missing %q in %s", want, withPreview)
+		}
+	}
+	// The preview output must come after the RTSP output so the encoder
+	// options above it stay scoped to the RTSP stream.
+	if strings.Index(withPreview, "-f rtsp") > strings.Index(withPreview, "-f mjpeg") {
+		t.Fatal("preview output must follow the RTSP output")
+	}
+
+	custom := strings.Join(BuildFFmpegArgsWith(prof, 8554, 8080, PreviewOptions{Enabled: true, FPS: 2, MaxWidth: 640, Quality: 8}), " ")
+	if !strings.Contains(custom, "min(640,iw)") || !strings.Contains(custom, "-r 2 -c:v mjpeg -q:v 8") {
+		t.Fatalf("custom preview options not applied: %s", custom)
+	}
+
+	disabled := strings.Join(BuildFFmpegArgsWith(prof, 8554, 8080, PreviewOptions{}), " ")
+	if strings.Contains(disabled, "pipe:1") || strings.Contains(disabled, "mjpeg") {
+		t.Fatalf("preview should be absent when disabled: %s", disabled)
+	}
+	// Zero values in an enabled preview fall back to defaults.
+	fallback := strings.Join(BuildFFmpegArgsWith(prof, 8554, 8080, PreviewOptions{Enabled: true}), " ")
+	if !strings.Contains(fallback, "min(1280,iw)") || !strings.Contains(fallback, "-r 5 -c:v mjpeg -q:v 5") {
+		t.Fatalf("defaults not applied: %s", fallback)
+	}
+}

@@ -1,0 +1,774 @@
+openapi: 3.1.0
+info:
+  title: MockCam Management API
+  version: 1.5.0
+  summary: REST, WebSocket and media endpoints of the MockCam virtual network camera emulator.
+  description: |
+    MockCam emulates an ONVIF Profile S network camera for VMS / NVR development and load testing.
+    This document describes the **management API** served on the HTTP port (default `8080`).
+
+    * The management API does not require authentication. RTSP and the ONVIF SOAP services honour
+      `server.auth_type` (Digest / Basic / none).
+    * Request bodies are JSON, at most 1 MiB, and **unknown fields are rejected with `400`** so that
+      typos in setting names are surfaced.
+    * Errors use the `Error` schema: `{"error": "<message>"}`.
+    * `405 Method Not Allowed` is returned for unsupported methods.
+
+    Related documents: [REST API notes (Japanese)](rest_api.md), [ONVIF Profile S](onvif_profile_s.md).
+  license:
+    name: MIT
+    identifier: MIT
+  contact:
+    name: MockCam
+    url: https://github.com/miyabiver39/mockcam
+externalDocs:
+  description: Project README
+  url: https://github.com/miyabiver39/mockcam#readme
+servers:
+  - url: http://localhost:8080
+    description: Local instance (default http_port)
+tags:
+  - name: System
+    description: Status, configuration, logs and diagnostics.
+  - name: Profiles
+    description: Stream profiles (one FFmpeg worker each). Updates hot-reload only the affected profile.
+  - name: Media
+    description: JPEG snapshots, MJPEG preview and the speaking-clock PCM feed.
+  - name: PTZ
+    description: Virtual pan/tilt/zoom state machine and presets.
+  - name: Realtime
+    description: WebSocket push channel and the MCP (Model Context Protocol) endpoint.
+  - name: Meta
+    description: Licenses and API documentation.
+
+paths:
+  /api/status:
+    get:
+      tags: [System]
+      operationId: getStatus
+      summary: Runtime status
+      description: Uptime, stream statistics, FFmpeg worker state and preview frame counters.
+      responses:
+        "200":
+          description: Current status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+              example:
+                version: "1.4.0"
+                model: MC-Pro-S
+                uptime_seconds: 128
+                profiles_count: 2
+                rtsp_clients: 4
+                packets_sent: 123456
+                bytes_sent: 98765432
+                bitrate_kbps: 4120.5
+                auth_type: digest
+                auth_user: admin
+                log_level: INFO
+                rtsp_port: 8554
+                http_port: 8080
+                onvif_port: 3702
+                workers:
+                  - { token: Profile_1, running: true, restarts: 0, pid: 225 }
+                  - { token: Profile_2, running: true, restarts: 1, pid: 13 }
+                previews:
+                  - { token: Profile_1, frames: 41, last_frame_bytes: 50918, last_frame_at: "2026-09-15T08:35:42Z" }
+
+  /api/config:
+    get:
+      tags: [System]
+      operationId: getConfig
+      summary: Full configuration (settings.json)
+      responses:
+        "200":
+          description: Configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Config"
+    put:
+      tags: [System]
+      operationId: updateServerConfig
+      summary: Update the server section
+      description: |
+        Only the `server` section is applied; `profiles` and `ptz` in the body are ignored.
+        Ports, authentication and log level are validated (`400` on error). Including `log_level`
+        changes the runtime log level immediately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                server:
+                  $ref: "#/components/schemas/ServerConfig"
+              required: [server]
+      responses:
+        "200":
+          description: Applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                  server: { $ref: "#/components/schemas/ServerConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/config/reset:
+    post:
+      tags: [System]
+      operationId: factoryReset
+      summary: Factory reset
+      description: Restores the default configuration and restarts every worker.
+      responses:
+        "200":
+          description: Reset completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                  message: { type: string }
+                  config: { $ref: "#/components/schemas/Config" }
+
+  /api/logs:
+    get:
+      tags: [System]
+      operationId: getLogs
+      summary: Recent log entries (last 200)
+      responses:
+        "200":
+          description: Log entries, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/LogEntry" }
+    put:
+      tags: [System]
+      operationId: setLogLevel
+      summary: Change the log level
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                level: { $ref: "#/components/schemas/LogLevel" }
+              required: [level]
+      responses:
+        "200":
+          description: Applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                  log_level: { $ref: "#/components/schemas/LogLevel" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/diagnostics/export:
+    get:
+      tags: [System]
+      operationId: exportDiagnostics
+      summary: Diagnostic bundle
+      description: Configuration, metrics, worker/preview state, clients, PTZ state and the last 500 log entries as one downloadable JSON file.
+      responses:
+        "200":
+          description: "Bundle (sent with `Content-Disposition: attachment`)"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/clients:
+    get:
+      tags: [System]
+      operationId: listClients
+      summary: Connected RTSP readers
+      responses:
+        "200":
+          description: Reader sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ClientInfo" }
+
+  /api/profiles:
+    get:
+      tags: [Profiles]
+      operationId: listProfiles
+      summary: List profiles
+      responses:
+        "200":
+          description: Profiles
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Profile" }
+    post:
+      tags: [Profiles]
+      operationId: createProfile
+      summary: Create a profile
+      description: Validates the profile, persists it and starts its FFmpeg worker.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Profile" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProfileMutationResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: A profile with the same token exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/profiles/{token}:
+    parameters:
+      - $ref: "#/components/parameters/Token"
+    get:
+      tags: [Profiles]
+      operationId: getProfile
+      summary: Get a profile
+      responses:
+        "200":
+          description: Profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Profiles]
+      operationId: updateProfile
+      summary: Update a profile (hot reload)
+      description: |
+        Persists the profile, closes its RTSP stream so players reconnect with the new SDP, and
+        restarts **only** this profile's FFmpeg worker (`SIGTERM`, then `Kill`). The `token` in the
+        body is ignored; the path is authoritative.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Profile" }
+      responses:
+        "200":
+          description: Updated and restarted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProfileMutationResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Profiles]
+      operationId: deleteProfile
+      summary: Delete a profile
+      description: Stops the worker and closes the stream. The last remaining profile cannot be deleted.
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                  message: { type: string }
+                  token: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/snapshot/{token}:
+    parameters:
+      - $ref: "#/components/parameters/Token"
+    get:
+      tags: [Media]
+      operationId: getSnapshot
+      summary: JPEG snapshot
+      description: |
+        The most recent frame of the live stream (the same picture that goes out over RTSP, including the
+        clock/OSD overlays), captured from a low-rate MJPEG side output of the FFmpeg worker and
+        downscaled to at most 1280 px wide. This is the URL returned by ONVIF `GetSnapshotUri`.
+
+        Until the worker has produced its first frame a synthetic preview is returned instead; the
+        `X-MockCam-Source` header tells which one you got.
+      responses:
+        "200":
+          description: JPEG image
+          headers:
+            X-MockCam-Source:
+              description: "`live` (encoder frame) or `synthetic` (fallback renderer)"
+              schema: { type: string, enum: [live, synthetic] }
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+    head:
+      tags: [Media]
+      operationId: headSnapshot
+      summary: Snapshot headers only
+      responses:
+        "200":
+          description: Same headers as GET without a body
+
+  /api/mjpeg/{token}:
+    parameters:
+      - $ref: "#/components/parameters/Token"
+    get:
+      tags: [Media]
+      operationId: getMJPEG
+      summary: MJPEG live preview
+      description: |
+        Endless `multipart/x-mixed-replace; boundary=frame` stream of live frames (about 5 fps, pushed as
+        soon as the encoder produces them). Usable directly as `<img src>` or as an MJPEG camera in a VMS.
+        Falls back to the synthetic preview at 5 fps until the first live frame arrives.
+      responses:
+        "200":
+          description: MJPEG stream
+          headers:
+            X-MockCam-Source:
+              schema: { type: string, enum: [live, synthetic] }
+          content:
+            multipart/x-mixed-replace:
+              schema: { type: string, format: binary }
+
+  /api/audio/timesignal:
+    get:
+      tags: [Media]
+      operationId: getTimeSignalPCM
+      summary: Speaking-clock PCM feed (internal)
+      description: |
+        Endless raw PCM (`audio/l16; rate=48000; channels=1`) used by workers whose audio mode is
+        `time_signal_ja` / `time_signal_en`. Every 10-second block announces the upcoming mark and plays
+        the tone pattern "ピ・ポ・ピ・ポ・ピ・ポ・ピ・ピ・ピ／" (880/440 Hz pips, 880 Hz mark).
+      parameters:
+        - name: lang
+          in: query
+          schema: { type: string, enum: [ja, en], default: ja }
+      responses:
+        "200":
+          description: PCM stream
+          content:
+            audio/l16:
+              schema: { type: string, format: binary }
+
+  /api/ptz:
+    get:
+      tags: [PTZ]
+      operationId: getPTZ
+      summary: Current PTZ position
+      responses:
+        "200":
+          description: Position
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PTZStatus" }
+    post:
+      tags: [PTZ]
+      operationId: movePTZ
+      summary: Move the virtual camera
+      description: |
+        `absolute` jumps to pan/tilt/zoom, `continuous` moves with the given velocity vector
+        (10 % of the range per second at velocity 1.0) until `stop`. Values are clamped to
+        pan/tilt `-1..1` and zoom `0..1`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PTZCommand" }
+            examples:
+              absolute:
+                value: { action: absolute, pan: 0.5, tilt: -0.2, zoom: 0.4 }
+              continuous:
+                value: { action: continuous, vel_pan: 1.0, vel_tilt: 0, vel_zoom: 0 }
+              stop:
+                value: { action: stop }
+      responses:
+        "200":
+          description: Position after the command
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PTZStatus"
+                  - type: object
+                    properties:
+                      status: { type: string, const: ok }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/ptz/presets:
+    get:
+      tags: [PTZ]
+      operationId: listPresets
+      summary: Saved PTZ presets
+      responses:
+        "200":
+          description: Presets
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PTZPreset" }
+    post:
+      tags: [PTZ]
+      operationId: managePresets
+      summary: Save / go to / delete a preset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action: { type: string, enum: [save_current, goto, delete] }
+                name:
+                  type: string
+                  description: Preset name. Optional for `save_current` (defaults to `Preset_N`); an existing name is overwritten.
+              required: [action]
+      responses:
+        "200":
+          description: Result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                  presets:
+                    type: array
+                    items: { $ref: "#/components/schemas/PTZPreset" }
+                  target: { $ref: "#/components/schemas/PTZPreset" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/licenses:
+    get:
+      tags: [Meta]
+      operationId: getLicenses
+      summary: Third-party attribution
+      responses:
+        "200":
+          description: Application info and bundled components
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  application:
+                    type: object
+                    properties:
+                      name: { type: string }
+                      version: { type: string }
+                      license: { type: string }
+                      url: { type: string, format: uri }
+                  components:
+                    type: array
+                    items: { $ref: "#/components/schemas/LicenseComponent" }
+
+  /api/docs:
+    get:
+      tags: [Meta]
+      operationId: getApiDocs
+      summary: Interactive API reference (Scalar)
+      responses:
+        "200":
+          description: HTML page rendering this document
+          content:
+            text/html:
+              schema: { type: string }
+
+  /openapi.yaml:
+    get:
+      tags: [Meta]
+      operationId: getOpenAPI
+      summary: This OpenAPI document
+      responses:
+        "200":
+          description: OpenAPI 3.1 document
+          content:
+            application/yaml:
+              schema: { type: string }
+
+  /mcp:
+    post:
+      tags: [Realtime]
+      operationId: mcp
+      summary: Model Context Protocol endpoint (Streamable HTTP)
+      description: |
+        JSON-RPC 2.0 endpoint implementing the Model Context Protocol (Streamable HTTP transport).
+        Point an MCP client (Claude Desktop, Claude Code, Cursor, ...) at this URL to control the camera with
+        natural language: tools mirror the REST API (`get_status`, `list_profiles`, `update_profile`, `ptz_move`,
+        `get_snapshot`, ...) and resources expose `mockcam://config`, `mockcam://status`, `mockcam://openapi`
+        and `mockcam://snapshot/{token}`. The same server is available on stdin/stdout with `mockcam -mcp-stdio`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: JSON-RPC request (e.g. `initialize`, `tools/list`, `tools/call`)
+      responses:
+        "200":
+          description: JSON-RPC response or SSE stream, depending on the `Accept` header
+          content:
+            application/json:
+              schema: { type: object }
+            text/event-stream:
+              schema: { type: string }
+
+  /ws:
+    get:
+      tags: [Realtime]
+      operationId: websocket
+      summary: WebSocket push channel
+      description: |
+        Upgrade to WebSocket. The server pushes `{"type":"ptz",...}` on every PTZ change (the current
+        state is sent right after connecting) and `{"type":"log","entry":{...}}` for every log entry.
+        Clients may send `{"action":"move","pan":..,"tilt":..,"zoom":..}` (absolute move) or
+        `{"action":"stop"}`.
+      responses:
+        "101":
+          description: Switching Protocols
+
+components:
+  parameters:
+    Token:
+      name: token
+      in: path
+      required: true
+      description: Profile token (`[A-Za-z0-9_-]{1,64}`), e.g. `Profile_1`.
+      schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,64}$" }
+
+  responses:
+    BadRequest:
+      description: Validation error or malformed JSON
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+      required: [error]
+
+    LogLevel:
+      type: string
+      enum: [DEBUG, INFO, WARN, ERROR]
+
+    LogEntry:
+      type: object
+      properties:
+        timestamp: { type: string, example: "2026-09-15 10:00:00.000" }
+        level: { $ref: "#/components/schemas/LogLevel" }
+        source: { type: string, example: rtsp }
+        message: { type: string }
+
+    WorkerStatus:
+      type: object
+      properties:
+        token: { type: string }
+        running: { type: boolean }
+        restarts: { type: integer, description: "Automatic restarts after FFmpeg exits" }
+        pid: { type: integer }
+
+    PreviewInfo:
+      type: object
+      properties:
+        token: { type: string }
+        frames: { type: integer, format: int64 }
+        last_frame_bytes: { type: integer }
+        last_frame_at: { type: string, format: date-time }
+
+    Status:
+      type: object
+      properties:
+        version: { type: string }
+        model: { type: string }
+        uptime_seconds: { type: integer, format: int64 }
+        profiles_count: { type: integer }
+        rtsp_clients: { type: integer, format: int64, description: Open RTSP TCP connections }
+        packets_sent: { type: integer, format: int64 }
+        bytes_sent: { type: integer, format: int64 }
+        bitrate_kbps: { type: number }
+        auth_type: { type: string }
+        auth_user: { type: string }
+        log_level: { $ref: "#/components/schemas/LogLevel" }
+        rtsp_port: { type: integer }
+        http_port: { type: integer }
+        onvif_port: { type: integer }
+        workers:
+          type: array
+          items: { $ref: "#/components/schemas/WorkerStatus" }
+        previews:
+          type: array
+          items: { $ref: "#/components/schemas/PreviewInfo" }
+
+    ClientInfo:
+      type: object
+      properties:
+        id: { type: string, example: sess-1 }
+        remote_ip: { type: string }
+        path: { type: string, example: Profile_1 }
+        transport: { type: string, example: TCP/RTP }
+        duration_seconds: { type: integer, format: int64 }
+
+    DeviceInfo:
+      type: object
+      properties:
+        manufacturer: { type: string }
+        model: { type: string }
+        firmware_version: { type: string, description: Always synced to the running MockCam version }
+        serial_number: { type: string }
+        hardware_id: { type: string }
+
+    ServerConfig:
+      type: object
+      properties:
+        rtsp_port: { type: integer, minimum: 1, maximum: 65535, default: 8554 }
+        http_port: { type: integer, minimum: 1, maximum: 65535, default: 8080 }
+        onvif_port: { type: integer, minimum: 1, maximum: 65535, default: 3702, description: WS-Discovery multicast port }
+        auth_type: { type: string, enum: [digest, basic, none], default: digest, description: Applies to RTSP and ONVIF SOAP }
+        auth_user: { type: string, default: admin }
+        auth_pass: { type: string, default: admin1234 }
+        log_level: { $ref: "#/components/schemas/LogLevel" }
+        device_info: { $ref: "#/components/schemas/DeviceInfo" }
+
+    Resolution:
+      type: object
+      properties:
+        width: { type: integer, minimum: 0, maximum: 7680 }
+        height: { type: integer, minimum: 0, maximum: 4320 }
+
+    VideoConfig:
+      type: object
+      properties:
+        codec: { type: string, enum: [H264, H265, HEVC, VP9, AV1], default: H264 }
+        resolution: { $ref: "#/components/schemas/Resolution" }
+        framerate: { type: integer, minimum: 0, maximum: 240, default: 30 }
+        gop_size: { type: integer, minimum: 0, maximum: 1000, default: 30 }
+        bitrate_mode: { type: string, enum: [CBR, VBR], default: CBR }
+        bitrate_limit_kbps: { type: integer, minimum: 0, maximum: 200000, default: 4000 }
+        quality: { type: number, description: Reserved (not used by the encoder yet) }
+        pattern: { type: string, enum: [testsrc2, smptebars, allrgb, mptestsrc], description: Test pattern for `generate` mode }
+        osd_text: { type: string, description: Custom overlay text (top-left) }
+        show_clock: { type: boolean, description: Draw the ISO 8601 clock with milliseconds (always drawn when osd_text is empty) }
+        enable_noise: { type: boolean, description: Add sensor grain }
+        enable_motion_box: { type: boolean, description: Draw a moving red box for motion-detection tests }
+
+    AudioConfig:
+      type: object
+      properties:
+        enabled: { type: boolean, default: true }
+        mode:
+          type: string
+          enum: [time_signal, time_signal_ja, time_signal_en, silent, noise, chime]
+          default: time_signal
+          description: |
+            `time_signal` 880 Hz beep · `time_signal_ja`/`time_signal_en` spoken 117 clock with tones ·
+            `silent` · `noise` white noise · `chime`
+        codec: { type: string, enum: [AAC, G711A, PCMA, ALAW, G711U, PCMU, MULAW, G726, ADPCM_G726], default: AAC }
+        bitrate_kbps: { type: integer, minimum: 0, maximum: 1024, default: 128 }
+        sample_rate: { type: integer, minimum: 0, maximum: 192000, default: 44100 }
+
+    Profile:
+      type: object
+      properties:
+        token:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{1,64}$"
+          description: Identifier used in the RTSP path `/live/<token>` and as the ONVIF profile token
+        name: { type: string }
+        source_mode: { type: string, enum: [generate, file], default: generate }
+        source_path: { type: string, description: Video file to loop when source_mode is `file` (falls back to generate when missing) }
+        video: { $ref: "#/components/schemas/VideoConfig" }
+        audio: { $ref: "#/components/schemas/AudioConfig" }
+      required: [token]
+
+    ProfileMutationResult:
+      type: object
+      properties:
+        status: { type: string, const: ok }
+        message: { type: string }
+        profile: { $ref: "#/components/schemas/Profile" }
+
+    PTZPreset:
+      type: object
+      properties:
+        name: { type: string }
+        pan: { type: number, minimum: -1, maximum: 1 }
+        tilt: { type: number, minimum: -1, maximum: 1 }
+        zoom: { type: number, minimum: 0, maximum: 1 }
+
+    PTZConfig:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        node_token: { type: string, default: PTZNode_1 }
+        pan: { type: number, minimum: -1, maximum: 1 }
+        tilt: { type: number, minimum: -1, maximum: 1 }
+        zoom: { type: number, minimum: 0, maximum: 1 }
+        speed: { type: number, description: Reserved }
+        presets:
+          type: array
+          items: { $ref: "#/components/schemas/PTZPreset" }
+
+    Config:
+      type: object
+      properties:
+        server: { $ref: "#/components/schemas/ServerConfig" }
+        profiles:
+          type: array
+          items: { $ref: "#/components/schemas/Profile" }
+        ptz: { $ref: "#/components/schemas/PTZConfig" }
+
+    PTZStatus:
+      type: object
+      properties:
+        pan: { type: number }
+        tilt: { type: number }
+        zoom: { type: number }
+        is_moving: { type: boolean }
+
+    PTZCommand:
+      type: object
+      properties:
+        action: { type: string, enum: [absolute, continuous, stop] }
+        pan: { type: number }
+        tilt: { type: number }
+        zoom: { type: number }
+        vel_pan: { type: number }
+        vel_tilt: { type: number }
+        vel_zoom: { type: number }
+      required: [action]
+
+    LicenseComponent:
+      type: object
+      properties:
+        name: { type: string }
+        version: { type: string }
+        license: { type: string }
+        copyright: { type: string }
+        url: { type: string, format: uri }
+        kind: { type: string, enum: [go, frontend, runtime, tts, font] }
+        notes: { type: string }

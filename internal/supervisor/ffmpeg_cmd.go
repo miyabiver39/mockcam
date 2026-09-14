@@ -10,11 +10,35 @@ import (
 	"mockcam/internal/timesignal"
 )
 
-// BuildFFmpegArgs generates the argument slice for FFmpeg based on profile configuration.
+// PreviewOptions controls the low-rate MJPEG side output that feeds the
+// JPEG snapshot / MJPEG endpoints. Frames are written to FFmpeg's stdout as a
+// raw MJPEG stream and reassembled by frames.Splitter.
+type PreviewOptions struct {
+	Enabled  bool
+	FPS      int // frames per second of the preview stream (default 5)
+	MaxWidth int // frames wider than this are downscaled (default 1280)
+	Quality  int // MJPEG -q:v, 2 (best) .. 31 (worst); default 5
+}
+
+// DefaultPreview returns the preview settings used in production.
+func DefaultPreview() PreviewOptions {
+	return PreviewOptions{Enabled: true, FPS: 5, MaxWidth: 1280, Quality: 5}
+}
+
+// BuildFFmpegArgs generates the argument slice for FFmpeg based on profile
+// configuration, including the default MJPEG preview side output.
 func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int, httpPort ...int) []string {
 	hPort := 8080
 	if len(httpPort) > 0 && httpPort[0] > 0 {
 		hPort = httpPort[0]
+	}
+	return BuildFFmpegArgsWith(profile, rtspPort, hPort, DefaultPreview())
+}
+
+// BuildFFmpegArgsWith is BuildFFmpegArgs with explicit ports and preview settings.
+func BuildFFmpegArgsWith(profile config.ProfileConfig, rtspPort, hPort int, preview PreviewOptions) []string {
+	if hPort <= 0 {
+		hPort = 8080
 	}
 
 	var args []string
@@ -202,5 +226,36 @@ func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int, httpPort ...int
 		"-f", "rtsp", destURL,
 	)
 
+	// 6. Optional MJPEG preview side output on stdout (video only, low rate).
+	if preview.Enabled {
+		args = append(args, previewArgs(preview)...)
+	}
+
 	return args
+}
+
+// previewArgs renders the second output that produces snapshot frames. The
+// first output keeps FFmpeg's automatic stream selection; this one maps the
+// video stream explicitly and drops audio.
+func previewArgs(p PreviewOptions) []string {
+	fps := p.FPS
+	if fps <= 0 {
+		fps = 5
+	}
+	maxWidth := p.MaxWidth
+	if maxWidth <= 0 {
+		maxWidth = 1280
+	}
+	quality := p.Quality
+	if quality <= 0 {
+		quality = 5
+	}
+	return []string{
+		"-map", "0:v:0", "-an",
+		// Keep the aspect ratio, never upscale, keep dimensions even for yuv420.
+		"-vf", fmt.Sprintf("scale=w='min(%d,iw)':h=-2", maxWidth),
+		"-r", fmt.Sprintf("%d", fps),
+		"-c:v", "mjpeg", "-q:v", fmt.Sprintf("%d", quality), "-pix_fmt", "yuvj420p",
+		"-f", "mjpeg", "pipe:1",
+	}
 }

@@ -114,10 +114,15 @@ func TestStreamerSchedule(t *testing.T) {
 		t.Fatal("phrase should have finished")
 	}
 
-	// :05.0 — silence (no tone, no voice).
-	st.Chunk(context.Background(), base.Add(5*time.Second), buf)
+	// :05.5 — between pips: silence (no tone, no voice).
+	st.Chunk(context.Background(), base.Add(5*time.Second+500*time.Millisecond), buf)
 	if rms(buf) != 0 {
-		t.Fatalf("expected silence at :05, rms=%v", rms(buf))
+		t.Fatalf("expected silence at :05.5, rms=%v", rms(buf))
+	}
+	// :05.0 — a pip but no voice.
+	st.Chunk(context.Background(), base.Add(5*time.Second), buf)
+	if rms(buf) < 0.05 || st.Speaking() {
+		t.Fatalf("expected a pip without speech at :05, rms=%v speaking=%v", rms(buf), st.Speaking())
 	}
 
 	// :11.0 — next block announces :20.

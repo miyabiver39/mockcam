@@ -19,6 +19,7 @@ import (
 
 	"mockcam/internal/auth"
 	"mockcam/internal/config"
+	"mockcam/internal/frames"
 	"mockcam/internal/logger"
 	"mockcam/internal/onvif"
 	"mockcam/internal/rtsp"
@@ -74,6 +75,7 @@ type testEnv struct {
 	rtsp    *fakeRTSP
 	ptz     *onvif.PTZController
 	logs    *logger.RingLogger
+	store   *frames.Store
 }
 
 type silentSynth struct{}
@@ -95,13 +97,14 @@ func newEnv(t *testing.T) *testEnv {
 	rt := &fakeRTSP{}
 	logs := logger.NewRingLogger(100)
 	ts := timesignal.NewServiceWith(silentSynth{}, time.Now)
+	store := frames.NewStore()
 
-	h := newAPIHandler(cfgMgr, sup, rt, ptz, ts, logs)
+	h := newAPIHandler(cfgMgr, sup, rt, ptz, store, ts, logs)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	// PTZ persists asynchronously; wait so TempDir cleanup does not race the write.
 	t.Cleanup(ptz.WaitSync)
-	return &testEnv{mux: mux, handler: h, cfg: cfgMgr, sup: sup, rtsp: rt, ptz: ptz, logs: logs}
+	return &testEnv{mux: mux, handler: h, cfg: cfgMgr, sup: sup, rtsp: rt, ptz: ptz, logs: logs, store: store}
 }
 
 func (e *testEnv) do(t *testing.T, method, path string, body string) *httptest.ResponseRecorder {
@@ -146,7 +149,7 @@ func TestStatus(t *testing.T) {
 
 func TestStatusWithoutOptionalComponents(t *testing.T) {
 	cfgMgr, _ := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
-	h := newAPIHandler(cfgMgr, nil, nil, onvif.NewPTZController(cfgMgr), timesignal.NewServiceWith(silentSynth{}, time.Now), logger.NewRingLogger(10))
+	h := newAPIHandler(cfgMgr, nil, nil, onvif.NewPTZController(cfgMgr), nil, timesignal.NewServiceWith(silentSynth{}, time.Now), logger.NewRingLogger(10))
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	for _, p := range []string{"/api/status", "/api/clients", "/api/diagnostics/export"} {
@@ -494,28 +497,6 @@ func TestSnapshot(t *testing.T) {
 	}
 }
 
-func TestSnapshotSizeAndPreview(t *testing.T) {
-	cases := []struct{ w, h, wantW, wantH int }{
-		{0, 0, 640, 360},
-		{1920, 1080, 1280, 720},
-		{1280, 720, 1280, 720},
-		{640, 480, 640, 480},
-	}
-	for _, c := range cases {
-		if w, h := snapshotSize(c.w, c.h); w != c.wantW || h != c.wantH {
-			t.Errorf("snapshotSize(%d,%d) = %dx%d", c.w, c.h, w, h)
-		}
-	}
-	img := RenderPreview(200, 100, 1, 1, 1)
-	if img.Bounds().Dx() != 200 || img.Bounds().Dy() != 100 {
-		t.Fatal("preview size")
-	}
-	// Crosshair is drawn at the shifted position (pan=1 → x=150, tilt=1 → y=25).
-	if r, g, b, _ := img.At(150, 25).RGBA(); r != 0 || g>>8 != 255 || b>>8 != 180 {
-		t.Fatalf("crosshair colour at target = %v %v %v", r>>8, g>>8, b>>8)
-	}
-}
-
 func TestMJPEGStreamsFrames(t *testing.T) {
 	e := newEnv(t)
 	srv := httptest.NewServer(e.mux)
@@ -646,7 +627,7 @@ func TestServerHandlerServesUIAndAPI(t *testing.T) {
 	ptz := onvif.NewPTZController(cfgMgr)
 	onvifSrv := onvif.NewServer(cfgMgr, authenticator, ptz)
 
-	srv := NewServer(cfgMgr, authenticator, nil, nil, ptz, onvifSrv)
+	srv := NewServer(cfgMgr, authenticator, nil, nil, ptz, nil, onvifSrv)
 	handler, err := srv.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -675,5 +656,116 @@ func TestServerHandlerServesUIAndAPI(t *testing.T) {
 	}
 	if err := srv.Close(); err != nil {
 		t.Fatalf("Close before Start should be a no-op: %v", err)
+	}
+}
+
+func fakeJPEG(tag byte) []byte {
+	return []byte{0xFF, 0xD8, 0xFF, 0xE0, tag, 0xFF, 0xD9}
+}
+
+func TestSnapshotPrefersLiveFrame(t *testing.T) {
+	e := newEnv(t)
+
+	// No live frame yet → synthetic JPEG, flagged as such.
+	rec := e.do(t, "GET", "/api/snapshot/Profile_1", "")
+	if rec.Code != 200 || rec.Header().Get(sourceHeader) != "synthetic" {
+		t.Fatalf("synthetic: %d %q", rec.Code, rec.Header().Get(sourceHeader))
+	}
+	if _, err := jpeg.Decode(bytes.NewReader(rec.Body.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+
+	// Once the encoder delivered a frame it is served verbatim.
+	e.store.Publish("Profile_1", fakeJPEG(7))
+	rec = e.do(t, "GET", "/api/snapshot/Profile_1", "")
+	if rec.Header().Get(sourceHeader) != "live" || !bytes.Equal(rec.Body.Bytes(), fakeJPEG(7)) {
+		t.Fatalf("live frame not served: %q %v", rec.Header().Get(sourceHeader), rec.Body.Bytes())
+	}
+	if rec.Header().Get("Content-Length") != "7" || rec.Header().Get("Content-Type") != "image/jpeg" {
+		t.Fatalf("headers: %v", rec.Header())
+	}
+
+	// HEAD works for VMS probes and other profiles fall back independently.
+	rec = e.do(t, "HEAD", "/api/snapshot/Profile_1", "")
+	if rec.Code != 200 || rec.Body.Len() != 0 || rec.Header().Get(sourceHeader) != "live" {
+		t.Fatalf("HEAD: %d len=%d", rec.Code, rec.Body.Len())
+	}
+	if rec := e.do(t, "GET", "/api/snapshot/Profile_2", ""); rec.Header().Get(sourceHeader) != "synthetic" {
+		t.Fatal("Profile_2 has no live frame")
+	}
+
+	// Deleting the profile forgets its frame.
+	_ = e.do(t, "DELETE", "/api/profiles/Profile_1", "")
+	if _, _, ok := e.store.Latest("Profile_1"); ok {
+		t.Fatal("frame should be forgotten after delete")
+	}
+	if e.do(t, "POST", "/api/snapshot/Profile_2", "").Code != 405 {
+		t.Fatal("POST should be 405")
+	}
+}
+
+func TestStatusIncludesPreviewInfo(t *testing.T) {
+	e := newEnv(t)
+	e.store.Publish("Profile_2", fakeJPEG(1))
+	var st StatusResponse
+	decode(t, e.do(t, "GET", "/api/status", ""), &st)
+	if len(st.Previews) != 1 || st.Previews[0].Token != "Profile_2" || st.Previews[0].Frames != 1 {
+		t.Fatalf("previews = %+v", st.Previews)
+	}
+}
+
+func TestMJPEGStreamsLiveFrames(t *testing.T) {
+	e := newEnv(t)
+	e.store.Publish("Profile_1", fakeJPEG(1))
+	srv := httptest.NewServer(e.mux)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/mjpeg/Profile_1", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.Header.Get(sourceHeader) != "live" {
+		t.Fatalf("source = %q", resp.Header.Get(sourceHeader))
+	}
+
+	readFrame := func(br *bufio.Reader) []byte {
+		t.Helper()
+		line, err := br.ReadString('\n')
+		if err != nil || strings.TrimSpace(line) != "--frame" {
+			t.Fatalf("boundary = %q err=%v", line, err)
+		}
+		length := 0
+		for {
+			hdr, err := br.ReadString('\n')
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hdr = strings.TrimSpace(hdr); hdr == "" {
+				break
+			}
+			if strings.HasPrefix(hdr, "Content-Length: ") {
+				length = atoi(strings.TrimPrefix(hdr, "Content-Length: "))
+			}
+		}
+		frame := make([]byte, length)
+		if _, err := io.ReadFull(br, frame); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = br.ReadString('\n') // trailing CRLF
+		return frame
+	}
+
+	br := bufio.NewReader(resp.Body)
+	if first := readFrame(br); !bytes.Equal(first, fakeJPEG(1)) {
+		t.Fatalf("first frame = %v", first)
+	}
+	// A newly published frame is pushed immediately (well before the keepalive).
+	e.store.Publish("Profile_1", fakeJPEG(2))
+	if second := readFrame(br); !bytes.Equal(second, fakeJPEG(2)) {
+		t.Fatalf("second frame = %v", second)
 	}
 }

@@ -6,45 +6,24 @@ import (
 	"io"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/gorilla/websocket"
 
+	"mockcam/internal/camera"
 	"mockcam/internal/config"
 	"mockcam/internal/logger"
-	"mockcam/internal/onvif"
-	"mockcam/internal/rtsp"
-	"mockcam/internal/supervisor"
 	"mockcam/internal/timesignal"
 )
 
-// StreamSupervisor is the subset of supervisor.Supervisor used by the API.
-type StreamSupervisor interface {
-	RestartProfile(token string) error
-	StopProfile(token string)
-	Status() []supervisor.WorkerStatus
-}
-
-// StreamServer is the subset of rtsp.Server used by the API.
-type StreamServer interface {
-	GetClientCount() int64
-	GetStats() rtsp.StreamStats
-	GetClients() []rtsp.ClientInfo
-	CloseStream(token string)
-}
-
-// PTZ is the subset of onvif.PTZController used by the API.
-type PTZ interface {
-	GetStatus() (pan, tilt, zoom float64, moving bool)
-	AbsoluteMove(pan, tilt, zoom float64)
-	ContinuousMove(velPan, velTilt, velZoom float64)
-	Stop()
-	AddListener(fn func(pan, tilt, zoom float64))
-}
-
-var _ PTZ = (*onvif.PTZController)(nil)
-var _ StreamSupervisor = (*supervisor.Supervisor)(nil)
-var _ StreamServer = (*rtsp.Server)(nil)
+// Aliases keep the transport-facing names stable while the definitions live
+// in the core package shared with the MCP server.
+type (
+	StreamSupervisor = camera.StreamSupervisor
+	StreamServer     = camera.StreamServer
+	PTZ              = camera.PTZ
+	FrameSource      = camera.FrameSource
+	StatusResponse   = camera.Status
+)
 
 // maxBodyBytes bounds JSON request bodies (settings are tiny).
 const maxBodyBytes = 1 << 20
@@ -55,28 +34,27 @@ var upgrader = websocket.Upgrader{
 
 // APIHandler coordinates REST and WebSocket endpoints.
 type APIHandler struct {
+	core          *camera.Controller
 	cfgMgr        *config.Manager
-	supervisor    StreamSupervisor
-	rtspServer    StreamServer
 	ptz           PTZ
-	timeSignalSvc *timesignal.Service
 	logs          *logger.RingLogger
-	startTime     time.Time
-	now           func() time.Time
+	timeSignalSvc *timesignal.Service
 
 	wsMu      sync.Mutex
 	wsClients map[*websocket.Conn]bool
 }
 
-// NewAPIHandler creates a new APIHandler. superv and rtspSrv may be nil
-// (e.g. in tests); the corresponding features then degrade gracefully.
+// NewAPIHandler creates a new APIHandler. superv, rtspSrv and frameSrc may
+// be nil (e.g. in tests); the corresponding features then degrade gracefully
+// (snapshots fall back to a synthetic preview).
 func NewAPIHandler(
 	cfgMgr *config.Manager,
 	superv StreamSupervisor,
 	rtspSrv StreamServer,
 	ptzCtrl PTZ,
+	frameSrc FrameSource,
 ) *APIHandler {
-	return newAPIHandler(cfgMgr, superv, rtspSrv, ptzCtrl, timesignal.NewService(), logger.GlobalLogger)
+	return newAPIHandler(cfgMgr, superv, rtspSrv, ptzCtrl, frameSrc, timesignal.NewService(), logger.GlobalLogger)
 }
 
 func newAPIHandler(
@@ -84,34 +62,41 @@ func newAPIHandler(
 	superv StreamSupervisor,
 	rtspSrv StreamServer,
 	ptzCtrl PTZ,
+	frameSrc FrameSource,
 	ts *timesignal.Service,
 	logs *logger.RingLogger,
 ) *APIHandler {
+	return NewAPIHandlerWith(camera.New(cfgMgr, superv, rtspSrv, ptzCtrl, frameSrc, logs), ts)
+}
+
+// NewAPIHandlerWith builds the handler around an existing Controller so the
+// REST API and the MCP server share one core instance.
+func NewAPIHandlerWith(core *camera.Controller, ts *timesignal.Service) *APIHandler {
 	h := &APIHandler{
-		cfgMgr:        cfgMgr,
-		supervisor:    superv,
-		rtspServer:    rtspSrv,
-		ptz:           ptzCtrl,
+		core:          core,
+		cfgMgr:        core.Config(),
+		ptz:           core.PTZController(),
+		logs:          core.Logger(),
 		timeSignalSvc: ts,
-		logs:          logs,
-		startTime:     time.Now(),
-		now:           time.Now,
 		wsClients:     make(map[*websocket.Conn]bool),
 	}
 
 	// Hook PTZ position updates to the WebSocket broadcaster.
-	ptzCtrl.AddListener(func(pan, tilt, zoom float64) {
-		_, _, _, moving := ptzCtrl.GetStatus()
+	h.ptz.AddListener(func(pan, tilt, zoom float64) {
+		_, _, _, moving := h.ptz.GetStatus()
 		h.broadcastPTZ(pan, tilt, zoom, moving)
 	})
 
 	// Hook log messages to the WebSocket broadcaster.
-	logs.Subscribe(func(entry logger.LogEntry) {
+	h.logs.Subscribe(func(entry logger.LogEntry) {
 		h.broadcastLog(entry)
 	})
 
 	return h
 }
+
+// Core exposes the shared controller (used by main to wire the MCP server).
+func (h *APIHandler) Core() *camera.Controller { return h.core }
 
 // RegisterRoutes attaches REST API and WebSocket routes to mux.
 func (h *APIHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -129,6 +114,8 @@ func (h *APIHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/logs", h.handleLogs)
 	mux.HandleFunc("/api/diagnostics/export", h.handleDiagnosticsExport)
 	mux.HandleFunc("/api/licenses", h.handleLicenses)
+	mux.HandleFunc("/api/docs", h.handleAPIDocs)
+	mux.HandleFunc("/openapi.yaml", h.handleOpenAPI)
 	mux.HandleFunc("/ws", h.handleWS)
 }
 
@@ -142,6 +129,20 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeCoreError maps controller sentinel errors to HTTP status codes.
+func writeCoreError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, camera.ErrNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, camera.ErrInvalid):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, camera.ErrConflict):
+		writeError(w, http.StatusConflict, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, err.Error())
+	}
 }
 
 // readJSON decodes a bounded JSON body into v, rejecting unknown fields so

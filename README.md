@@ -1,4 +1,6 @@
-# MockCam - 仮想ネットワークカメラエミュレーター
+# MockCam - Virtual Network Camera Emulator
+
+**English** | [日本語](README.jp.md)
 
 [![CI/CD Pipeline](https://github.com/miyabiver39/mockcam/actions/workflows/ci.yml/badge.svg)](https://github.com/miyabiver39/mockcam/actions)
 [![Release](https://img.shields.io/github/v/release/miyabiver39/mockcam?include_prereleases&color=06b6d4)](https://github.com/miyabiver39/mockcam/releases)
@@ -6,50 +8,54 @@
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](go.mod)
 [![Docker](https://img.shields.io/badge/Docker-Multi--Arch-2496ED?logo=docker)](Dockerfile)
 
-`MockCam` は、VMS（ビデオ管理システム）や NVR、監視カメラ連携システムの開発・負荷検証のために設計された、高スケーラブルな**仮想ネットワークカメラエミュレーター**です。
+`MockCam` is a highly scalable **virtual network camera emulator** built for developing and load-testing VMS (video management systems), NVRs and other surveillance-camera integrations.
 
-Go による完全静的リンクバイナリと `gortsplib/v4` による 1:N ゼロコピー転送アーキテクチャにより、1 プロセスで **1,000 台以上の同時 RTSP 接続** を低負荷・低遅延に配信します。
+A fully static Go binary and the 1:N zero-copy fan-out of `gortsplib/v5` let a single process serve **1,000+ concurrent RTSP clients** with low CPU load and low latency.
 
 ---
 
-## 🌟 主要機能ハイライト
+## 🌟 Feature Highlights
 
-* **🚀 1,000 台以上の超高スケーラブル配信**:
-  * `gortsplib/v4` を採用し、FFmpeg からの RTP パケットをノンブロッキングにクライアントへファンアウト。
-* **🎥 マルチプロファイル & ホットリロード**:
-  * メインストリーム（1080p CBR）、サブストリーム（720p VBR）など複数プロファイルを独立管理。
-  * 設定変更時は該当プロファイルのサブプロセスのみを安全にホットリロード（`SIGTERM` → 応答がなければ `Kill`）。他ストリームを一切中断させません。
-  * FFmpeg が異常終了した場合は自動的に再起動します。
-* **🎞️ テストパターン & オーバーレイ**:
-  * 映像ソースは `testsrc2` / `smptebars` / `allrgb` / `mptestsrc` から選択、または動画ファイルをループ再生（`source_mode: "file"`）。
-  * PTS タイムコード（`HH:MM:SS.mmm`）、任意の OSD テキスト、センサーノイズ、VMS の動体検知テスト用の移動バウンディングボックスを重畳可能。
-* **⏱️ 時報音声（ビープ / 117 読み上げ）**:
-  * 880 Hz ビープ時報（`time_signal`）、無音（`silent`）、ホワイトノイズ（`noise`）、チャイム（`chime`）に加え、**117 時報の音声読み上げ**（`time_signal_ja` / `time_signal_en`）を搭載。
-  * 日本語は Open JTalk（tohoku-f01 女声）、英語は espeak-ng / Windows SAPI で合成。10 秒ごとに次の時刻を読み上げ、`:07 :08 :09` に 880 Hz の予報音、`:00` に 880 Hz のマーク音を鳴らします（放送規格の再現ではなく、聞き心地を優先したデザイン）。
-* **📡 ONVIF Profile S 完全準拠**:
-  * **WS-Discovery**: UDP 3702（マルチキャスト `239.255.255.250`）による自動検出に対応。
-  * **SOAP サービス群**: Device Service、Media Service、PTZ Service を規格に準拠して実装。
-* **🧭 リアルタイム PTZ 仮想ステートマシン**:
-  * メモリ上で Pan/Tilt/Zoom 座標を管理。VMS からの PTZ 操作や Web UI からの操作をリアルタイムに処理。
-  * Web ダッシュボード上の SVG レーダー画面と WebSocket（`/ws`）で双方向リアルタイム同期。
-  * PTZ プリセットの保存・呼び出し（`settings.json` に永続化）。
-* **💻 ビルドステップ不要の埋め込み Web ダッシュボード**:
-  * Go の `embed` 機能により、単一バイナリ内に Tailwind CSS + Alpine.js ダッシュボードを完全内包。
-  * ライブ診断ログ（FFmpeg の stderr を含む）、接続中 RTSP クライアント一覧、設定のエクスポート / ファクトリーリセット、診断情報の一括エクスポートに対応。
+* **🚀 1,000+ concurrent RTSP clients**
+  * `gortsplib/v5` fans RTP packets from FFmpeg out to every reader without blocking.
+* **🎥 Multiple profiles with hot reload**
+  * Manage several profiles independently — e.g. a 1080p CBR main stream and a 720p VBR sub stream.
+  * Changing a profile restarts **only that profile's** FFmpeg subprocess (`SIGTERM`, then `Kill` if it does not exit); other streams are never interrupted.
+  * Crashed FFmpeg workers are restarted automatically.
+* **📷 JPEG snapshots & MJPEG preview of the live stream**
+  * `GET /api/snapshot/{token}` returns the latest frame of what is actually being sent over RTSP (test pattern, clock and OSD overlays included) — the URL advertised by ONVIF `GetSnapshotUri`.
+  * `GET /api/mjpeg/{token}` streams the same frames as `multipart/x-mixed-replace` (~5 fps), usable directly in an `<img>` tag or as an MJPEG camera in a VMS. Video only, no audio.
+* **🎞️ Test patterns & overlays**
+  * Pick `testsrc2` / `smptebars` / `allrgb` / `mptestsrc`, or loop a video file (`source_mode: "file"`).
+  * Overlay an ISO 8601 clock with milliseconds, custom OSD text, sensor noise, and a moving bounding box for motion-detection tests.
+* **⏱️ Time-signal audio (beep or spoken "117" clock)**
+  * 880 Hz beep (`time_signal`), silence (`silent`), white noise (`noise`), chime (`chime`), plus a **spoken speaking clock** (`time_signal_ja` / `time_signal_en`).
+  * Japanese is synthesised with Open JTalk (tohoku-f01 female voice), English with espeak-ng / Windows SAPI. Every 10 seconds the upcoming mark is announced, followed by the tone pattern "pi-po-pi-po-pi-po-pi-pi-pi—" (880/440 Hz pips, 880 Hz mark).
+* **📡 ONVIF Profile S**
+  * **WS-Discovery** on UDP 3702 (multicast `239.255.255.250`) for automatic detection.
+  * **SOAP services**: Device, Media and PTZ services implemented to the specification.
+* **🧭 Real-time virtual PTZ state machine**
+  * Pan/tilt/zoom kept in memory and driven by VMS PTZ commands or the Web UI; two-way live sync with the SVG radar in the dashboard over WebSocket (`/ws`).
+  * PTZ presets are saved to `settings.json`.
+* **💻 Embedded Web dashboard, no build step**
+  * Tailwind CSS + Alpine.js dashboard embedded in the binary with Go's `embed`; 7 UI languages.
+  * Live diagnostic log (including FFmpeg stderr), connected RTSP clients, config export / factory reset, one-click diagnostics bundle, third-party license notice.
+* **📖 OpenAPI 3.1 + Scalar API reference**
+  * The management API is described in [`docs/openapi.yaml`](docs/openapi.yaml), served at `/openapi.yaml`, and rendered interactively at `/api/docs`.
+* **🤖 MCP (Model Context Protocol) server**
+  * AI agents (Claude Desktop, Claude Code, Cursor, …) can inspect and control the camera: `/mcp` (Streamable HTTP) or `mockcam -mcp-stdio`. Tools mirror the REST API and `get_snapshot` returns the live JPEG as image content.
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Docker Compose（推奨）
-
-リポジトリ直下で以下のコマンドを実行するだけで即時起動します。
+### 1. Docker Compose (recommended)
 
 ```bash
 docker compose up -d
 ```
 
-### 2. Docker Run（単体実行）
+### 2. Docker Run
 
 ```bash
 docker run -d \
@@ -61,72 +67,106 @@ docker run -d \
   ghcr.io/miyabiver39/mockcam:latest
 ```
 
-### 3. ローカルビルド & 実行 (Go 1.26+)
+### 3. Build & run locally (Go 1.26+)
 
-FFmpeg がインストールされている環境であれば、直接ビルド・実行も可能です。
+With FFmpeg installed you can build and run the binary directly.
 
 ```bash
-# 依存関係取得
 go mod download
-
-# ビルド
-go build -o mockcam cmd/mockcam/main.go
-
-# 起動
+go build -o mockcam ./cmd/mockcam
 ./mockcam
 
-# 設定ファイルのパスを明示する場合
+# explicit config path
 ./mockcam -config ./config/settings.json
 ```
 
-> 設定ファイルの探索順は `-config` フラグ → 環境変数 `CONFIG_PATH` → 既定パス（Linux/macOS: `/config/settings.json`、Windows: `./config/settings.json`）です。ファイルが存在しない場合はデフォルト設定が自動生成されます。
+> The configuration file is resolved in this order: `-config` flag → `CONFIG_PATH` environment variable → default path (Linux/macOS: `/config/settings.json`, Windows: `./config/settings.json`). A default configuration is generated when the file does not exist.
 >
-> Windows では WS-Discovery のマルチキャスト待受に失敗することがありますが、警告ログのみで起動は継続します（RTSP / Web / SOAP は利用可能）。
+> On Windows the WS-Discovery multicast listener may fail to bind; MockCam logs a warning and keeps running (RTSP / Web / SOAP remain available). Local runs need `ffmpeg` on `PATH`; the spoken clock additionally needs Open JTalk (Japanese) or espeak-ng / SAPI (English) and otherwise falls back to a chime.
 
 ---
 
-## 📡 接続方法ガイド
+## 📡 Connecting
 
-### 1. Web 管理ダッシュボード
-ブラウザで以下の URL を開きます。
+### 1. Web dashboard
+
 ```text
 http://localhost:8080
 ```
-* **ステータスパネル**: 稼働時間、接続中の RTSP クライアント数、送出パケット数・ビットレート、稼働プロファイル数を確認。
-* **プロファイル管理**: 解像度、FPS、GOP、ビットレート（CBR/VBR）、テストパターン、OSD テキスト、音声モードを GUI 上で即座に変更・ホットリロード。プロファイルの追加・削除も可能。
-* **PTZ レーダー & プリセット**: 十字キーやスライダーでカメラポインターを動かすと、リアルタイムに連動します。現在位置をプリセットとして保存・呼び出しできます。
-* **ライブスナップショット**: PTZ 位置を反映した JPEG プレビューを一定間隔で自動更新。
-* **診断ログ & クライアント一覧**: システムログと FFmpeg の出力をリアルタイム表示、接続中の RTSP セッションを一覧化。
-* **設定のバックアップ / リセット**: `settings.json` のエクスポート、ファクトリーリセット、診断情報（設定・統計・ログ）の一括エクスポート。
 
-### 2. VLC / ffplay での直接視聴
+* **Status panel** — uptime, connected RTSP clients, packets / bitrate, worker state.
+* **Profile management** — resolution, FPS, GOP, bitrate (CBR/VBR), test pattern, OSD text, audio mode; changes hot-reload instantly. Add and delete profiles.
+* **PTZ radar & presets** — drive the camera with the D-pad, sliders or keyboard (`W/A/S/D`, arrows, `+/-`, `Space`) and save positions as presets.
+* **Live preview** — MJPEG stream of the real camera output, or periodic JPEG snapshots.
+* **Diagnostics** — live console log, connected clients, `settings.json` export, factory reset, downloadable diagnostics bundle.
+* **ℹ️ About** — version and third-party licenses; **API Reference** (Scalar) and **OpenAPI** links in the footer.
 
-デフォルトの認証情報（`admin` / `admin1234`）を指定してストリームを開きます。
+### 2. VLC / ffplay
+
+Default credentials are `admin` / `admin1234`.
 
 ```bash
-# メインストリーム (1080p 30fps CBR)
+# main stream (1080p 30fps CBR)
 ffplay rtsp://admin:admin1234@localhost:8554/live/Profile_1
 
-# サブストリーム (720p 15fps VBR)
+# sub stream (720p 15fps VBR)
 ffplay rtsp://admin:admin1234@localhost:8554/live/Profile_2
 ```
 
-### 3. VMS / ONVIF Device Manager での探索
-1. 同一ネットワーク内の VMS や `ONVIF Device Manager (ODM)` を起動。
-2. WS-Discovery（UDP 3702）により自動的に `MockCam` が一覧に表示されます。
-3. 手動追加する場合のサービスアドレス:
+### 3. JPEG snapshot / MJPEG
+
+```bash
+# single JPEG of the current picture (what RTSP clients see)
+curl -o snap.jpg http://localhost:8080/api/snapshot/Profile_1
+
+# MJPEG stream (~5 fps), e.g. in a browser or VMS "MJPEG camera" input
+ffplay http://localhost:8080/api/mjpeg/Profile_1
+```
+
+The `X-MockCam-Source` response header is `live` for encoder frames and `synthetic` while the worker has not produced a frame yet (e.g. right after start-up or when FFmpeg is missing).
+
+### 4. VMS / ONVIF Device Manager
+
+1. Start your VMS or `ONVIF Device Manager (ODM)` on the same network.
+2. MockCam appears automatically via WS-Discovery (UDP 3702).
+3. Manual service address:
    ```text
    http://<Host-IP>:8080/onvif/device_service
    ```
-4. 認証: ユーザー名 `admin`、パスワード `admin1234`
+4. Credentials: `admin` / `admin1234`. `GetSnapshotUri` returns the JPEG endpoint above.
+
+### 5. MCP (AI agents)
+
+Streamable HTTP — add to your MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "mockcam": { "type": "http", "url": "http://localhost:8080/mcp" }
+  }
+}
+```
+
+stdio — let the client spawn MockCam itself (the camera runs for the lifetime of the session, logs go to stderr):
+
+```json
+{
+  "mcpServers": {
+    "mockcam": { "command": "mockcam", "args": ["-mcp-stdio", "-config", "./config/settings.json"] }
+  }
+}
+```
+
+Tools: `get_status`, `get_stream_urls`, `list_profiles`, `get_profile`, `create_profile`, `update_profile`, `delete_profile`, `get_config`, `update_server_config`, `factory_reset`, `get_ptz`, `ptz_move`, `list_ptz_presets`, `save_ptz_preset`, `goto_ptz_preset`, `delete_ptz_preset`, `get_snapshot`, `list_clients`, `get_logs`, `set_log_level`.
+Resources: `mockcam://config`, `mockcam://status`, `mockcam://logs`, `mockcam://licenses`, `mockcam://openapi`, `mockcam://snapshot/{token}`.
 
 ---
 
-## ⚙️ 設定仕様 (`settings.json`)
+## ⚙️ Configuration (`settings.json`)
 
-設定ファイルは `/config/settings.json`（Windows では `./config/settings.json`、または `-config` フラグ / 環境変数 `CONFIG_PATH` で指定したパス）に保存されます。Web UI や REST API から変更した内容は即座に同ファイルへ書き戻されます。
+The configuration lives at `/config/settings.json` (`./config/settings.json` on Windows, or the path given by `-config` / `CONFIG_PATH`). Changes made through the Web UI, REST API or MCP are written back immediately.
 
-初回起動時に自動生成されるデフォルト設定（メイン / サブの 2 プロファイル）:
+Default configuration generated on first start (main / sub profile):
 
 ```json
 {
@@ -140,7 +180,7 @@ ffplay rtsp://admin:admin1234@localhost:8554/live/Profile_2
     "device_info": {
       "manufacturer": "MockCam Standard",
       "model": "MC-Pro-S",
-      "firmware_version": "1.0.0",
+      "firmware_version": "1.5.0",
       "serial_number": "MC2026090001",
       "hardware_id": "v1.0"
     }
@@ -207,147 +247,147 @@ ffplay rtsp://admin:admin1234@localhost:8554/live/Profile_2
 }
 ```
 
-### 設定項目一覧
+### Settings reference
 
 #### `server`
 
-| キー | 説明 | デフォルト値 |
+| Key | Description | Default |
 |---|---|---|
-| `rtsp_port` | RTSP サーバー待受ポート | `8554` |
-| `http_port` | Web UI, REST API, SOAP 待受ポート | `8080` |
-| `onvif_port` | WS-Discovery マルチキャストポート | `3702` |
-| `auth_type` | 認証方式 (`digest`, `basic`, `none`)。RTSP と ONVIF SOAP に共通で適用 | `digest` |
-| `auth_user` / `auth_pass` | 認証ユーザー名 / パスワード | `admin` / `admin1234` |
-| `log_level` | ログ出力レベル (`DEBUG`, `INFO`, `WARN`, `ERROR`)。省略時は `INFO` | （省略） |
-| `device_info.*` | ONVIF `GetDeviceInformation` で返すメーカー・モデル・ファームウェア・シリアル・ハードウェア ID | 上記参照 |
+| `rtsp_port` | RTSP listen port | `8554` |
+| `http_port` | Web UI, REST API, SOAP, MCP listen port | `8080` |
+| `onvif_port` | WS-Discovery multicast port | `3702` |
+| `auth_type` | Authentication (`digest`, `basic`, `none`); applies to RTSP and ONVIF SOAP | `digest` |
+| `auth_user` / `auth_pass` | Credentials | `admin` / `admin1234` |
+| `log_level` | `DEBUG`, `INFO`, `WARN`, `ERROR` (default `INFO` when omitted) | (omitted) |
+| `device_info.*` | Manufacturer, model, firmware, serial and hardware ID returned by ONVIF `GetDeviceInformation`. `firmware_version` is always synced to the running MockCam version | see above |
 
 #### `profiles[]`
 
-| キー | 説明 | デフォルト値 |
+| Key | Description | Default |
 |---|---|---|
-| `token` | プロファイル識別子。RTSP パス `/live/<token>` および ONVIF プロファイルトークンになる | `Profile_1` |
-| `name` | 表示名 | `MainStream-CBR-1080p` |
-| `source_mode` | `generate`（FFmpeg のテストパターン生成）または `file`（動画ファイルをループ再生） | `generate` |
-| `source_path` | `file` モード時の動画ファイルパス（コンテナでは `/media` 配下）。存在しない場合は `generate` にフォールバック | `""` |
-| `video.codec` | 映像コーデック (`H264`, `H265`) | `H264` |
+| `token` | Identifier (`[A-Za-z0-9_-]{1,64}`); used in the RTSP path `/live/<token>` and as the ONVIF profile token | `Profile_1` |
+| `name` | Display name | `MainStream-CBR-1080p` |
+| `source_mode` | `generate` (FFmpeg test pattern) or `file` (loop a video file) | `generate` |
+| `source_path` | Video file for `file` mode (under `/media` in the container); falls back to `generate` when missing | `""` |
+| `video.codec` | `H264`, `H265`, `VP9`, `AV1` | `H264` |
 | `video.resolution` | `width` / `height` | `1920x1080` |
-| `video.framerate` | フレームレート (fps) | `30` |
-| `video.gop_size` | GOP 長（キーフレーム間隔） | `30` |
-| `video.bitrate_mode` | ビットレート制御 (`CBR`, `VBR`) | `CBR` |
-| `video.bitrate_limit_kbps` | ビットレート上限 (kbps)。CBR では固定値、VBR では `maxrate` | `4000` |
-| `video.quality` | 予約項目（現在のエンコード処理では未使用） | `5` |
-| `video.pattern` | テストパターン (`testsrc2`, `smptebars`, `allrgb`, `mptestsrc`)。`generate` モードのみ | `testsrc2` |
-| `video.osd_text` | 左上に重畳する任意の OSD テキスト | `""` |
-| `video.show_clock` | PTS タイムコード（`HH:MM:SS.mmm`）を画面下部に描画。`osd_text` が空の場合は常に描画 | `false` |
-| `video.enable_noise` | センサーノイズ（グレイン）を付加 | `false` |
-| `video.enable_motion_box` | 動体検知テスト用の赤い移動バウンディングボックスを描画 | `false` |
-| `audio.enabled` | 音声トラックの有無 | `true` |
-| `audio.mode` | 音声モード (`time_signal`: 880Hz ビープ時報, `time_signal_ja` / `time_signal_en`: 117 音声読み上げ + 880Hz 時報音, `silent`: 無音, `noise`: ホワイトノイズ, `chime`: チャイム) | `time_signal` |
-| `audio.codec` | 音声コーデック（現在は `AAC` のみ） | `AAC` |
-| `audio.bitrate_kbps` / `audio.sample_rate` | 音声ビットレート (kbps) / サンプリングレート (Hz) | `128` / `44100` |
+| `video.framerate` | Frames per second | `30` |
+| `video.gop_size` | GOP length (keyframe interval) | `30` |
+| `video.bitrate_mode` | `CBR` or `VBR` | `CBR` |
+| `video.bitrate_limit_kbps` | Bitrate (fixed for CBR, `maxrate` for VBR) | `4000` |
+| `video.quality` | Reserved (not used by the encoder yet) | `5` |
+| `video.pattern` | Test pattern (`testsrc2`, `smptebars`, `allrgb`, `mptestsrc`), `generate` mode only | `testsrc2` |
+| `video.osd_text` | Custom overlay text (top-left) | `""` |
+| `video.show_clock` | Draw the ISO 8601 clock with milliseconds at the bottom (always drawn when `osd_text` is empty) | `false` |
+| `video.enable_noise` | Add sensor grain | `false` |
+| `video.enable_motion_box` | Draw a moving red box for motion-detection tests | `false` |
+| `audio.enabled` | Whether an audio track is present | `true` |
+| `audio.mode` | `time_signal` (880 Hz beep), `time_signal_ja` / `time_signal_en` (spoken 117 clock + tones), `silent`, `noise`, `chime` | `time_signal` |
+| `audio.codec` | `AAC`, `G711A` (PCMA), `G711U` (PCMU), `G726` | `AAC` |
+| `audio.bitrate_kbps` / `audio.sample_rate` | Audio bitrate (kbps) / sample rate (Hz) | `128` / `44100` |
 
 #### `ptz`
 
-| キー | 説明 | デフォルト値 |
+| Key | Description | Default |
 |---|---|---|
-| `enabled` | PTZ サービスの有効化 | `true` |
-| `node_token` | ONVIF PTZ ノードトークン | `PTZNode_1` |
-| `pan` / `tilt` | 仮想座標（`-1.0`〜`1.0`）。移動のたびに現在値が保存される | `0` |
-| `zoom` | 仮想ズーム（`0.0`〜`1.0`） | `0` |
-| `speed` | 予約項目（現在未使用。ContinuousMove は速度ベクトル × 10%/秒 で座標を更新） | （省略） |
-| `presets[]` | 保存済みプリセット `{ "name", "pan", "tilt", "zoom" }` の配列。Web UI / `/api/ptz/presets` から管理 | （省略） |
+| `enabled` | Enable the PTZ service | `true` |
+| `node_token` | ONVIF PTZ node token | `PTZNode_1` |
+| `pan` / `tilt` | Virtual position (`-1.0`–`1.0`); the current position is persisted on every move | `0` |
+| `zoom` | Virtual zoom (`0.0`–`1.0`) | `0` |
+| `speed` | Reserved (ContinuousMove moves 10 % of the range per second at velocity 1.0) | (omitted) |
+| `presets[]` | Saved presets `{ "name", "pan", "tilt", "zoom" }`, managed by the Web UI / `/api/ptz/presets` / MCP | (omitted) |
 
 ---
 
-## 🔊 117 時報（音声読み上げ）の仕組み
+## 🔊 How the spoken "117" clock works
 
-`audio.mode` を `time_signal_ja` / `time_signal_en` にすると、FFmpeg は内部 HTTP エンドポイント `/api/audio/timesignal?lang=ja|en` から 48 kHz / 16-bit / mono の PCM を受け取ります。1 分間のタイムラインは次のとおりです。
+With `audio.mode` set to `time_signal_ja` / `time_signal_en`, FFmpeg reads 48 kHz / 16-bit / mono PCM from the internal endpoint `/api/audio/timesignal?lang=ja|en`. Each 10-second block sounds like this:
 
-| 秒 (10 秒ブロック内) | 内容 |
+| Second (within the block) | Content |
 |---|---|
-| `:01` 〜 `:03` | 次の 10 秒マークの時刻を読み上げ（例:「25分30秒をお知らせします」、毎分 `:00` は「午後3時25分をお知らせします」） |
-| `:07` `:08` `:09` | 880 Hz 予報音（100 ms、レイズドコサインで立ち上げ/立ち下げ） |
-| `:00` | 880 Hz マーク音（800 ms、ベル状の減衰） |
+| `:01` – `:03` | Announcement of the upcoming mark (e.g. "25分30秒をお知らせします"; on the minute "午後3時25分をお知らせします" / "At the tone, the time will be …") |
+| `:01` `:03` `:05` | "pi" — 880 Hz pip, 100 ms |
+| `:02` `:04` `:06` | "po" — 440 Hz pip, 100 ms |
+| `:07` `:08` `:09` | "pi pi pi" — 880 Hz preview pips |
+| `:00` | mark — 880 Hz, 800 ms with a bell-like decay |
 
-### Open JTalk のパラメータ方針
+All tone edges use raised-cosine ramps (no clicks) and the mix never clips.
 
-同梱の HTS 音声モデル（tohoku-f01 / nitech）は **48 kHz** で学習されています。`-s` でサンプルレートだけを変更すると、メルケプストラムの周波数ワープ係数（`-a`）と整合しなくなり、スペクトル包絡が歪んで不自然な（こもった・不気味な）声になります。v1.4.0 からは次の方針に統一しました。
+### Open JTalk parameter policy
 
-* `open_jtalk -x <dic> -m <voice> -r 1.00 -ow <wav>` のみを渡し、サンプルレート・α・ピッチ（`-fm`）はモデル既定値を使う
-* WAV は Go 側で RIFF チャンクを正しくパースし、必要な場合のみリサンプリング
-* 無音トリミング・10 ms フェード・ピーク正規化（-4.4 dBFS）を施し、時報音と混合してもクリップしない
+The bundled HTS voices (tohoku-f01 / nitech) are trained at **48 kHz**. Overriding only the sampling rate (`-s`) without the matching all-pass constant (`-a`) warps the spectral envelope and produces a hollow, unnatural voice. Since v1.4.0:
 
-TTS エンジンの検出順序は Open JTalk（日本語） → Windows SAPI → espeak-ng → チャイム（フォールバック）です。辞書・音声モデルの場所は環境変数 `MOCKCAM_OPENJTALK_DIC` / `MOCKCAM_OPENJTALK_VOICE` で上書きできます。
+* only `open_jtalk -x <dic> -m <voice> -r 1.00 -ow <wav>` is passed — sampling rate, α and pitch (`-fm`) stay at the model defaults;
+* the WAV is parsed chunk by chunk in Go and resampled only if necessary;
+* silence trimming, 10 ms fades and peak normalisation (−4.4 dBFS) keep the voice clean when mixed with the tones.
+
+Engine order: Open JTalk (Japanese) → Windows SAPI → espeak-ng → chime fallback. Override the dictionary / voice locations with `MOCKCAM_OPENJTALK_DIC` / `MOCKCAM_OPENJTALK_VOICE`.
 
 ---
 
-## ⚡ 性能チューニングガイド（1,000台以上の高負荷接続時）
+## ⚡ Performance tuning (1,000+ clients)
 
-1,000台以上のクライアントを同時接続して負荷検証を行う場合は、OS（Linux ホスト）のカーネルパラメータおよびファイルディスクリプタの上限を調整してください。
+When load-testing with more than 1,000 concurrent clients, raise the file-descriptor limit and tune the Linux kernel on the host.
 
-### 1. ファイルディスクリプタ上限（FD）の拡張
-`/etc/security/limits.conf` に以下を追加:
+### 1. File descriptors
+`/etc/security/limits.conf`:
 ```text
 * soft nofile 65535
 * hard nofile 65535
 ```
-または Docker コンテナ起動時に `--ulimit nofile=65535:65535` を指定。
+or start the container with `--ulimit nofile=65535:65535`.
 
-### 2. ネットワークソケット & カーネルパラメータ
-`/etc/sysctl.conf` に以下を追加して `sysctl -p` を実行:
+### 2. Sockets & kernel parameters
+Add to `/etc/sysctl.conf` and run `sysctl -p`:
 ```ini
-# ソケット受信キューの拡張
 net.core.somaxconn = 65535
-
-# SYN backlog キューの拡張
 net.ipv4.tcp_max_syn_backlog = 8192
-
-# ポート枯渇を防ぐためのローカルポート範囲拡大
 net.ipv4.ip_local_port_range = 1024 65535
-
-# TIME_WAIT ソケットの再利用
 net.ipv4.tcp_tw_reuse = 1
-
-# 送受信バッファの拡大
 net.core.rmem_max = 16777216
 net.core.wmem_max = 16777216
 ```
 
 ---
 
-## 📖 詳細ドキュメント
+## 📖 Documentation
 
-* [ONVIF Profile S 詳細仕様書](docs/onvif_profile_s.md)
-* [REST API & WebSocket 仕様書](docs/rest_api.md)
-* [AI コーディングエージェント向け開発ガイド](AGENTS.md)（Claude Code は `CLAUDE.md`、GitHub Copilot は `.github/copilot-instructions.md` 経由で参照）
+* [OpenAPI 3.1 specification](docs/openapi.yaml) — served at `/openapi.yaml`, browse it at `/api/docs` (Scalar)
+* [REST API & WebSocket notes (Japanese)](docs/rest_api.md)
+* [ONVIF Profile S details (Japanese)](docs/onvif_profile_s.md)
+* [Guide for AI coding agents](AGENTS.md) (Claude Code reads `CLAUDE.md`, GitHub Copilot reads `.github/copilot-instructions.md`)
 
 ---
 
-## 📄 ライセンス
+## 📄 License
 
-本ソフトウェアは [MIT License](LICENSE) の下で公開されています。
+MockCam is released under the [MIT License](LICENSE).
 
-### サードパーティライブラリ・データセット
+### Third-party components
 
-本ソフトウェアには、以下のサードパーティコンポーネントが含まれています。同じ一覧は Web ダッシュボードの「ℹ️ 情報」ボタンおよび `GET /api/licenses` からも参照できます（`internal/licenses` が単一の情報源です）。
+The following third-party components are bundled with or used by MockCam. The same list is available from the dashboard's "ℹ️ About" dialog and `GET /api/licenses` (`internal/licenses` is the single source of truth).
 
-| コンポーネント | ライセンス | 著作権者 |
+| Component | License | Copyright |
 |---|---|---|
-| [gortsplib/v5](https://github.com/bluenviron/gortsplib) | MIT License | bluenviron |
-| [gorilla/websocket](https://github.com/gorilla/websocket) | BSD-2-Clause License | The Gorilla WebSocket Authors |
-| [google/uuid](https://github.com/google/uuid) | BSD-3-Clause License | Google LLC |
-| [pion/rtp](https://github.com/pion/rtp), [pion/rtcp](https://github.com/pion/rtcp), pion/sdp, pion/srtp, pion/transport | MIT License | The Pion community |
-| [bluenviron/mediacommon](https://github.com/bluenviron/mediacommon) | MIT License | bluenviron |
-| golang.org/x/net, golang.org/x/sys, Go 標準ライブラリ | BSD-3-Clause License | The Go Authors |
-| [Tailwind CSS](https://github.com/tailwindlabs/tailwindcss)（Play CDN） | MIT License | Tailwind Labs, Inc. |
-| [Alpine.js](https://github.com/alpinejs/alpine) | MIT License | Caleb Porzio and contributors |
-| [FFmpeg](https://ffmpeg.org/)（外部プロセスとして起動） | GPL-2.0-or-later / LGPL-2.1-or-later | the FFmpeg developers |
-| [espeak-ng](https://github.com/espeak-ng/espeak-ng)（外部プロセスとして起動） | GPL-3.0-or-later | eSpeak NG contributors |
-| [Open JTalk](https://open-jtalk.sourceforge.net/) | Modified BSD License | Copyright (C) 2008-2016 Nagoya Institute of Technology |
-| [HTS Engine API](https://hts-engine.sourceforge.net/) | Modified BSD License | Copyright (C) 2001-2015 Nagoya Institute of Technology / Tokyo Institute of Technology |
-| NAIST-jdic (open_jtalk_dic_utf_8-1.11) | BSD-3-Clause License | Copyright (C) 2009 Nara Institute of Science and Technology |
+| [gortsplib/v5](https://github.com/bluenviron/gortsplib) | MIT | bluenviron |
+| [gorilla/websocket](https://github.com/gorilla/websocket) | BSD-2-Clause | The Gorilla WebSocket Authors |
+| [google/uuid](https://github.com/google/uuid) | BSD-3-Clause | Google LLC |
+| [modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk), google/jsonschema-go | MIT | The Go MCP SDK Authors / The Go JSON Schema Authors |
+| [pion/rtp](https://github.com/pion/rtp), [pion/rtcp](https://github.com/pion/rtcp), pion/sdp, pion/srtp, pion/transport | MIT | The Pion community |
+| [bluenviron/mediacommon](https://github.com/bluenviron/mediacommon) | MIT | bluenviron |
+| segmentio/encoding, yosida95/uritemplate | MIT / BSD-3-Clause | Segment.io, Inc. / Kohei YOSHIDA |
+| go.yaml.in/yaml/v3 | MIT / Apache-2.0 | Kirill Simonov, Canonical Ltd |
+| golang.org/x/net, x/sys, x/sync, x/time, x/oauth2, Go standard library | BSD-3-Clause | The Go Authors |
+| [Tailwind CSS](https://github.com/tailwindlabs/tailwindcss) (Play CDN) | MIT | Tailwind Labs, Inc. |
+| [Alpine.js](https://github.com/alpinejs/alpine) | MIT | Caleb Porzio and contributors |
+| [Scalar API Reference](https://github.com/scalar/scalar) (CDN, `/api/docs`) | MIT | Scalar |
+| [FFmpeg](https://ffmpeg.org/) (external process) | GPL-2.0-or-later / LGPL-2.1-or-later | the FFmpeg developers |
+| [espeak-ng](https://github.com/espeak-ng/espeak-ng) (external process) | GPL-3.0-or-later | eSpeak NG contributors |
+| [Open JTalk](https://open-jtalk.sourceforge.net/) | Modified BSD | Copyright (C) 2008-2016 Nagoya Institute of Technology |
+| [HTS Engine API](https://hts-engine.sourceforge.net/) | Modified BSD | Copyright (C) 2001-2015 Nagoya Institute of Technology / Tokyo Institute of Technology |
+| NAIST-jdic (open_jtalk_dic_utf_8-1.11) | BSD-3-Clause | Copyright (C) 2009 Nara Institute of Science and Technology |
 | HTS Voice tohoku-f01-neutral | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | Tohoku University, Graduate School of Information Sciences |
 | [DejaVu Fonts](https://dejavu-fonts.github.io/) | Bitstream Vera License / Public Domain | Bitstream, Inc. / DejaVu contributors |
 
-> **HTS Voice tohoku-f01-neutral (CC BY 4.0) Attribution**:
+> **HTS Voice tohoku-f01-neutral (CC BY 4.0) attribution**:
 > This product uses the HTS voice model `tohoku-f01-neutral` created by the Tohoku University, Graduate School of Information Sciences, licensed under the [Creative Commons Attribution 4.0 International License](https://creativecommons.org/licenses/by/4.0/).

@@ -1,6 +1,9 @@
+// Command mockcam runs the virtual network camera: RTSP fan-out, ONVIF
+// Profile S services, the web dashboard / REST API and the MCP server.
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"os"
@@ -9,17 +12,27 @@ import (
 	"syscall"
 
 	"mockcam/internal/auth"
+	"mockcam/internal/camera"
 	"mockcam/internal/config"
+	"mockcam/internal/frames"
 	"mockcam/internal/logger"
+	"mockcam/internal/mcpserver"
 	"mockcam/internal/onvif"
 	"mockcam/internal/rtsp"
 	"mockcam/internal/supervisor"
+	"mockcam/internal/timesignal"
 	"mockcam/internal/web"
 )
 
 func main() {
 	configPathFlag := flag.String("config", "", "Path to settings.json (default: /config/settings.json or $CONFIG_PATH)")
+	mcpStdio := flag.Bool("mcp-stdio", false, "Serve the Model Context Protocol on stdin/stdout (logs go to stderr); the camera keeps running until the MCP client disconnects")
 	flag.Parse()
+
+	if *mcpStdio {
+		// stdout belongs to the MCP transport; keep every log line off it.
+		log.SetOutput(os.Stderr)
+	}
 
 	configPath := *configPathFlag
 	if configPath == "" {
@@ -57,8 +70,9 @@ func main() {
 		log.Fatalf("[mockcam] Failed to start RTSP server: %v", err)
 	}
 
-	// 4. Initialize Supervisor (FFmpeg workers)
-	superv := supervisor.NewSupervisor(cfgMgr)
+	// 4. Initialize Supervisor (FFmpeg workers) with the JPEG preview sink
+	frameStore := frames.NewStore()
+	superv := supervisor.NewSupervisor(cfgMgr, supervisor.WithFrameSink(frameStore))
 	if err := superv.Start(); err != nil {
 		log.Fatalf("[mockcam] Failed to start FFmpeg supervisor: %v", err)
 	}
@@ -70,22 +84,37 @@ func main() {
 		log.Printf("[mockcam] Warning: WS-Discovery multicast start failed: %v", err)
 	}
 
-	// 6. Initialize Web Server (UI, API, WebSocket, and ONVIF SOAP routes)
-	webServer := web.NewServer(cfgMgr, authenticator, superv, rtspServer, ptzController, onvifServer)
+	// 6. Application core shared by the REST API, WebSocket and MCP
+	core := camera.New(cfgMgr, superv, rtspServer, ptzController, frameStore, logger.GlobalLogger)
+	mcpSrv := mcpserver.New(core)
+
+	// 7. Web Server (UI, API, WebSocket, ONVIF SOAP routes, MCP over HTTP)
+	webServer := web.NewServerWith(core, authenticator, onvifServer, timesignal.NewService())
+	webServer.Mount("/mcp", mcpserver.Handler(mcpSrv))
 	if err := webServer.Start(); err != nil {
 		log.Fatalf("[mockcam] Failed to start Web server: %v", err)
 	}
 
 	log.Printf("[mockcam] MockCam running successfully.")
 	log.Printf("[mockcam]   - Web Dashboard: http://localhost:%d", cfg.Server.HTTPPort)
+	log.Printf("[mockcam]   - API Reference: http://localhost:%d/api/docs", cfg.Server.HTTPPort)
+	log.Printf("[mockcam]   - MCP endpoint:  http://localhost:%d/mcp", cfg.Server.HTTPPort)
 	log.Printf("[mockcam]   - RTSP Streaming: rtsp://localhost:%d/live/{token}", cfg.Server.RTSPPort)
 	log.Printf("[mockcam]   - ONVIF Discovery: UDP 239.255.255.250:%d", cfg.Server.ONVIFPort)
 
-	// 7. Wait for OS interrupt signal
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	sig := <-sigChan
-	log.Printf("[mockcam] Received signal %v, shutting down gracefully...", sig)
+	// 8. Wait for an OS signal, or — in stdio mode — for the MCP client to go away.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if *mcpStdio {
+		log.Printf("[mockcam] Serving MCP on stdio; shutting down when the client disconnects")
+		if err := mcpserver.RunStdio(ctx, mcpSrv); err != nil && ctx.Err() == nil {
+			log.Printf("[mockcam] MCP stdio session ended: %v", err)
+		}
+	} else {
+		<-ctx.Done()
+	}
+	log.Printf("[mockcam] Shutting down gracefully...")
 
 	// Graceful teardown
 	discoveryServer.Close()

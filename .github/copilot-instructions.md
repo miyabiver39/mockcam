@@ -10,6 +10,10 @@ MockCam は Go 製の仮想ネットワークカメラエミュレーターで�
 - `internal/rtsp`: gortsplib/v5 ベースの RTSP サーバー。パスは `/live/<token>`。ループバックからの publish は認証免除（`authorizeRequest` は純粋関数）。
 - `internal/timesignal`: 117 時報。Open JTalk はネイティブ 48 kHz で合成（`-s`/`-a`/`-fm` 禁止）、880 Hz の時報音、`Runner`/`Synthesizer` で外部プロセスを抽象化。
 - `internal/licenses`: サードパーティ帰属の単一情報源（`/api/licenses`、UI の情報モーダル、README）。
+- `internal/frames`: FFmpeg の MJPEG サイド出力を JPEG に分割し最新フレームを保持（`/api/snapshot`, `/api/mjpeg` の実映像）。
+- `internal/camera`: `Controller` = REST / WebSocket / MCP が共有する業務ロジック。ハンドラやツールにロジックを書かない。
+- `internal/mcpserver`: Model Context Protocol サーバー（公式 go-sdk、`/mcp` と `-mcp-stdio`）。ツールは Controller の薄いラッパーで、Annotations 必須。
+- `docs/openapi.yaml`: 管理 API の OpenAPI 3.1（`/openapi.yaml`, `/api/docs` Scalar）。エンドポイント変更時は必ず更新（テストで検査）。
 - `internal/onvif`: SOAP ディスパッチ（`/onvif/device_service` など）、PTZ 仮想状態機械、WS-Discovery（UDP 3702）。
 - `internal/web`: HTTP サーバー、`/api/*`（`api_*.go` に分割）と `/ws`、`go:embed` された `static/index.html`（Tailwind CDN + Alpine.js、ビルド不要）。supervisor/rtsp はインターフェースで受け取る。
 - `internal/auth`: Basic / Digest 認証（HTTP・RTSP 共用）。`internal/logger`: リングバッファ + WebSocket 配信ロガー。
@@ -18,7 +22,7 @@ MockCam は Go 製の仮想ネットワークカメラエミュレーターで�
 ## コーディング規約
 
 - Go 1.26、モジュール名 `mockcam`。標準ライブラリを優先し、新規依存の追加は避ける。追加した場合は `internal/licenses/licenses.go` にも登録する。
-- エクスポート識別子には英語の doc コメントを付ける。コメントは英語、`README.md` / `docs/` は日本語。
+- エクスポート識別子には英語の doc コメントを付ける。コメントは英語。`README.md` は英語、`README.jp.md` は日本語（両方を同期）。`docs/*.md` は日本語、`docs/openapi.yaml` は英語。
 - エラーは `fmt.Errorf("...: %w", err)` でラップする。
 - 共有状態は `mu.Lock(); defer mu.Unlock()` と `*Locked` サフィックスの内部メソッドで扱う。goroutine には `context` と `WaitGroup` で停止経路を用意する。
 - ダッシュボードに出すログは `logger.Infof(source, format, ...)` を使う（`source` はパッケージ名）。

@@ -44,7 +44,28 @@ var Components = []Component{
 		Copyright: "Copyright (c) 2023 The Pion community",
 		URL:       "https://github.com/pion/rtcp", Kind: "go",
 	},
-	// --- Go modules (indirect, pulled in by gortsplib) ---
+	{
+		Name: "github.com/modelcontextprotocol/go-sdk", Version: "v1.8.0", License: "MIT",
+		Copyright: "Copyright 2025 The Go MCP SDK Authors",
+		URL:       "https://github.com/modelcontextprotocol/go-sdk", Kind: "go",
+		Notes: "Model Context Protocol server (/mcp and -mcp-stdio).",
+	},
+	// --- Go modules (indirect, pulled in by gortsplib and the MCP SDK) ---
+	{
+		Name: "github.com/google/jsonschema-go", License: "MIT",
+		Copyright: "Copyright 2025 The Go JSON Schema Authors",
+		URL:       "https://github.com/google/jsonschema-go", Kind: "go",
+	},
+	{
+		Name: "github.com/segmentio/encoding, github.com/segmentio/asm", License: "MIT",
+		Copyright: "Copyright (c) 2019 Segment.io, Inc.",
+		URL:       "https://github.com/segmentio/encoding", Kind: "go",
+	},
+	{
+		Name: "github.com/yosida95/uritemplate/v3", License: "BSD-3-Clause",
+		Copyright: "Copyright (c) 2015 Kohei YOSHIDA",
+		URL:       "https://github.com/yosida95/uritemplate", Kind: "go",
+	},
 	{
 		Name: "github.com/bluenviron/mediacommon/v2", License: "MIT",
 		Copyright: "Copyright (c) 2023 bluenviron",
@@ -56,12 +77,12 @@ var Components = []Component{
 		URL:       "https://github.com/pion", Kind: "go",
 	},
 	{
-		Name: "golang.org/x/net, golang.org/x/sys", License: "BSD-3-Clause",
+		Name: "golang.org/x/net, golang.org/x/sys, golang.org/x/sync, golang.org/x/time, golang.org/x/oauth2", License: "BSD-3-Clause",
 		Copyright: "Copyright 2009 The Go Authors",
 		URL:       "https://go.googlesource.com/", Kind: "go",
 	},
 	{
-		Name: "go.yaml.in/yaml/v3", License: "MIT / Apache-2.0",
+		Name: "go.yaml.in/yaml/v3", Version: "v3.0.5", License: "MIT / Apache-2.0",
 		Copyright: "Copyright (c) 2006-2011 Kirill Simonov, 2011-2019 Canonical Ltd",
 		URL:       "https://github.com/yaml/go-yaml", Kind: "go",
 	},
@@ -81,6 +102,12 @@ var Components = []Component{
 		Name: "Alpine.js", Version: "3.x", License: "MIT",
 		Copyright: "Copyright (c) 2019-2021 Caleb Porzio and contributors",
 		URL:       "https://github.com/alpinejs/alpine", Kind: "frontend",
+	},
+	{
+		Name: "Scalar API Reference", License: "MIT",
+		Copyright: "Copyright (c) 2023-2026 Scalar",
+		URL:       "https://github.com/scalar/scalar", Kind: "frontend",
+		Notes: "Loaded from jsDelivr by the /api/docs page to render the OpenAPI document.",
 	},
 
 	// --- Runtime tools invoked as separate processes (Docker image) ---

@@ -51,6 +51,19 @@ MockCam supports:
 - `chime`: 1046.5Hz bell chime via `sine=frequency=1046.5:beep_factor=2:r=<sampleRate>`.
 - `silent`: Null audio stream via `anullsrc=channel_layout=stereo:sample_rate=<sampleRate>`.
 
+## 2b. JPEG Preview Side Output
+
+When a frame sink is configured (`supervisor.WithFrameSink`), `BuildFFmpegArgsWith` appends a **second output** after the RTSP one:
+
+```
+-map 0:v:0 -an -vf scale=w='min(1280,iw)':h=-2 -r 5 -c:v mjpeg -q:v 5 -pix_fmt yuvj420p -f mjpeg pipe:1
+```
+
+- It must stay *after* the RTSP output so the H.264/audio options remain scoped to the RTSP stream.
+- The first output keeps FFmpeg's automatic stream selection; the second maps video explicitly and drops audio.
+- stdout is consumed by `frames.NewSplitter`, which reassembles JPEGs (SOI..EOI) and publishes them to `frames.Store`; `/api/snapshot` and `/api/mjpeg` read from the store.
+- Tunables live in `supervisor.PreviewOptions` (FPS, MaxWidth, Quality).
+
 ## 3. RTSP Zero-Latency & Packet Dropping Prevention
 
 To ensure smooth 1:N fanout without stuttering:

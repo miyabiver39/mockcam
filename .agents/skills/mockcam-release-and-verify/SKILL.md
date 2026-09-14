@@ -21,9 +21,11 @@ When releasing a new version, bump the version string across all required locati
    - Update the two fallback version strings (`'vX.Y.Z'` in the header badge and the footer).
 3. **`internal/licenses/licenses.go`**:
    - Update `Version` fields when Go modules were bumped (`licenses_test.go` cross-checks go.mod).
-4. **`README.md`** & **`docs/`** (if applicable):
-   - Ensure documented features and version badge/mentions reflect the release.
-5. **Toolchain**: `go.mod` (`go 1.26`), `Dockerfile` (`golang:1.26-alpine`, `alpine:3.22`) and `.github/workflows/ci.yml` (`go-version: '1.26.x'`, Node 24 based actions) must stay consistent.
+4. **`docs/openapi.yaml`**:
+   - Update `info.version` (`api_docs_test.go` asserts it equals `AppVersion`).
+5. **`README.md`** (English) & **`README.jp.md`** (Japanese) & **`docs/`**:
+   - Keep both READMEs in sync; ensure documented features and version mentions reflect the release.
+6. **Toolchain**: `go.mod` (`go 1.26`), `Dockerfile` (`golang:1.26-alpine`, `alpine:3.22`) and `.github/workflows/ci.yml` (`go-version: '1.26.x'`, Node 24 based actions) must stay consistent.
 
 ## 2. Local Static Analysis & Unit Tests
 
@@ -88,7 +90,15 @@ docker logs mockcam-test
    ```bash
    curl -s -I http://localhost:8080/api/snapshot/Profile_1
    ```
-   Must return `HTTP/1.1 200 OK` and `Content-Type: image/jpeg`.
+   Must return `HTTP/1.1 200 OK`, `Content-Type: image/jpeg` and, once FFmpeg is running, `X-MockCam-Source: live`.
+
+2b. **OpenAPI & MCP**:
+   ```bash
+   curl -s http://localhost:8080/openapi.yaml | head -3
+   curl -s -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}' \
+     http://localhost:8080/mcp | head -c 300
+   ```
 
 3. **Favicon Assets**:
    ```bash
