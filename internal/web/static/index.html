@@ -54,11 +54,23 @@
         </button>
 
         <button @click="downloadDiagnostics()" class="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700 transition flex items-center space-x-1" title="Download JSON Diagnostic Bundle">
-          <span>📥 Diagnostics</span>
+          <span x-text="t('btn_diagnostics')"></span>
         </button>
 
-        <button @click="refreshAll()" class="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition">
-          Refresh
+        <!-- Language Selector -->
+        <div class="relative flex items-center">
+          <select x-model="currentLang" @change="setLang($event.target.value)" class="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium rounded-lg px-2 py-1.5 focus:outline-none focus:border-cyan-500 cursor-pointer">
+            <option value="ja">🇯🇵 日本語</option>
+            <option value="en">🇺🇸 English</option>
+            <option value="zh">🇨🇳 中文</option>
+            <option value="ko">🇰🇷 한국어</option>
+            <option value="es">🇪🇸 Español</option>
+            <option value="fr">🇫🇷 Français</option>
+            <option value="de">🇩🇪 Deutsch</option>
+          </select>
+        </div>
+
+        <button @click="refreshAll()" class="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition" x-text="t('btn_refresh')">
         </button>
       </div>
     </div>
@@ -117,21 +129,21 @@
     <div class="flex border-b border-slate-800 space-x-4 text-sm font-medium">
       <button @click="currentTab = 'profiles'" class="pb-2.5 border-b-2 transition"
               :class="currentTab === 'profiles' ? 'border-cyan-400 text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-200'">
-        📹 Camera & Stream Profiles
+        📹 <span x-text="t('tab_profiles')"></span>
       </button>
       <button @click="currentTab = 'logs'" class="pb-2.5 border-b-2 transition flex items-center space-x-1.5"
               :class="currentTab === 'logs' ? 'border-cyan-400 text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-200'">
-        <span>📜 Live Console Logs</span>
+        <span>📜 <span x-text="t('tab_logs')"></span></span>
         <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-cyan-950 text-cyan-400 border border-cyan-800" x-text="logs.length"></span>
       </button>
       <button @click="currentTab = 'clients'" class="pb-2.5 border-b-2 transition flex items-center space-x-1.5"
               :class="currentTab === 'clients' ? 'border-cyan-400 text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-200'">
-        <span>👥 Active RTSP Clients</span>
+        <span>👥 <span x-text="t('tab_clients')"></span></span>
         <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-slate-300" x-text="clients.length"></span>
       </button>
       <button @click="currentTab = 'system'" class="pb-2.5 border-b-2 transition"
               :class="currentTab === 'system' ? 'border-cyan-400 text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-200'">
-        ⚙️ System & Backup
+        ⚙️ <span x-text="t('tab_system')"></span>
       </button>
     </div>
 
@@ -205,36 +217,48 @@
                 </div>
               </div>
 
-              <!-- Form Fields -->
-              <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
-                <div>
-                  <label class="block text-slate-400 mb-1">Resolution</label>
+                <!-- Resolution with Presets & Custom Input -->
+                <div class="space-y-1">
+                  <div class="flex items-center justify-between">
+                    <label class="block text-slate-400 font-medium" x-text="t('label_resolution')"></label>
+                    <select @change="onResolutionPresetChange(profile, $event.target.value)" class="bg-slate-950 border border-slate-700 text-[11px] rounded px-1.5 py-0.5 text-slate-300">
+                      <option value="" x-text="t('opt_custom_res')">-- Preset --</option>
+                      <option value="3840x2160">4K UHD (3840x2160)</option>
+                      <option value="2560x1440">2K QHD (2560x1440)</option>
+                      <option value="1920x1080">1080p FHD (1920x1080)</option>
+                      <option value="1280x720">720p HD (1280x720)</option>
+                      <option value="854x480">480p SD (854x480)</option>
+                      <option value="640x360">360p nHD (640x360)</option>
+                    </select>
+                  </div>
                   <div class="flex items-center space-x-1">
-                    <input type="number" x-model.number="profile.video.resolution.width" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center">
+                    <input type="number" x-model.number="profile.video.resolution.width" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center font-mono">
                     <span class="text-slate-500">x</span>
-                    <input type="number" x-model.number="profile.video.resolution.height" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center">
+                    <input type="number" x-model.number="profile.video.resolution.height" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center font-mono">
                   </div>
                 </div>
 
                 <div>
-                  <label class="block text-slate-400 mb-1">FPS / GOP</label>
+                  <label class="block text-slate-400 mb-1" x-text="t('label_fps_gop')"></label>
                   <div class="flex items-center space-x-1">
-                    <input type="number" x-model.number="profile.video.framerate" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center" title="FPS">
+                    <input type="number" x-model.number="profile.video.framerate" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center font-mono" title="FPS">
                     <span class="text-slate-500">/</span>
-                    <input type="number" x-model.number="profile.video.gop_size" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center" title="GOP">
+                    <input type="number" x-model.number="profile.video.gop_size" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center font-mono" title="GOP">
                   </div>
                 </div>
 
                 <div>
-                  <label class="block text-slate-400 mb-1">Codec</label>
+                  <label class="block text-slate-400 mb-1" x-text="t('label_video_codec')"></label>
                   <select x-model="profile.video.codec" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white">
                     <option value="H264">H.264 (AVC)</option>
                     <option value="H265">H.265 (HEVC)</option>
+                    <option value="VP9">VP9 (Google Realtime)</option>
+                    <option value="AV1">AV1 (SVT-AV1)</option>
                   </select>
                 </div>
 
                 <div>
-                  <label class="block text-slate-400 mb-1">Bitrate Mode</label>
+                  <label class="block text-slate-400 mb-1" x-text="t('label_bitrate_mode')"></label>
                   <select x-model="profile.video.bitrate_mode" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white font-medium"
                           :class="profile.video.bitrate_mode === 'CBR' ? 'text-amber-400' : 'text-cyan-400'">
                     <option value="CBR">CBR (Constant)</option>
@@ -243,12 +267,12 @@
                 </div>
 
                 <div>
-                  <label class="block text-slate-400 mb-1">Max Bitrate (kbps)</label>
-                  <input type="number" x-model.number="profile.video.bitrate_limit_kbps" step="500" min="200" max="20000" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center">
+                  <label class="block text-slate-400 mb-1" x-text="t('label_video_bitrate')"></label>
+                  <input type="number" x-model.number="profile.video.bitrate_limit_kbps" step="250" min="200" max="40000" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center font-mono">
                 </div>
 
                 <div>
-                  <label class="block text-slate-400 mb-1">Pattern Generator</label>
+                  <label class="block text-slate-400 mb-1" x-text="t('label_pattern')"></label>
                   <select x-model="profile.video.pattern" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white">
                     <option value="testsrc2">Color Bar + Move (testsrc2)</option>
                     <option value="smptebars">SMPTE Color Bars</option>
@@ -258,7 +282,7 @@
                 </div>
 
                 <div>
-                  <label class="block text-slate-400 mb-1">Audio Mode</label>
+                  <label class="block text-slate-400 mb-1" x-text="t('label_audio_mode')"></label>
                   <select x-model="profile.audio.mode" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white">
                     <option value="time_signal">時報 (Beep Signal 880Hz)</option>
                     <option value="noise">White Noise</option>
@@ -268,8 +292,23 @@
                   </select>
                 </div>
 
-                <div class="sm:col-span-2">
-                  <label class="block text-slate-400 mb-1">Custom OSD Text Overlay</label>
+                <div>
+                  <label class="block text-slate-400 mb-1" x-text="t('label_audio_codec')"></label>
+                  <select x-model="profile.audio.codec" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white">
+                    <option value="AAC">AAC (Advanced Audio Coding)</option>
+                    <option value="G711A">G.711 A-law (PCMA)</option>
+                    <option value="G711U">G.711 µ-law (PCMU)</option>
+                    <option value="G726">G.726 (ADPCM 32kbps)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="block text-slate-400 mb-1" x-text="t('label_audio_bitrate')"></label>
+                  <input type="number" x-model.number="profile.audio.bitrate_kbps" step="16" min="16" max="320" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center font-mono">
+                </div>
+
+                <div class="sm:col-span-3">
+                  <label class="block text-slate-400 mb-1" x-text="t('label_osd_text')"></label>
                   <input type="text" x-model="profile.video.osd_text" placeholder="e.g. [Camera 01 - Gate]" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white">
                 </div>
               </div>
@@ -278,11 +317,11 @@
               <div class="flex items-center space-x-6 text-xs text-slate-300 pt-1">
                 <label class="flex items-center space-x-2 cursor-pointer">
                   <input type="checkbox" x-model="profile.video.enable_noise" class="rounded accent-cyan-500">
-                  <span>Simulate Sensor Noise</span>
+                  <span x-text="t('chk_noise')"></span>
                 </label>
                 <label class="flex items-center space-x-2 cursor-pointer">
                   <input type="checkbox" x-model="profile.video.enable_motion_box" class="rounded accent-cyan-500">
-                  <span>Moving Target Box (VMS Motion Test)</span>
+                  <span x-text="t('chk_motion_box')"></span>
                 </label>
               </div>
 
@@ -292,7 +331,7 @@
                         :disabled="Boolean(saving[profile.token])"
                         class="px-4 py-1.5 text-xs font-semibold rounded-lg text-white transition flex items-center space-x-1.5 shadow-lg"
                         :class="Boolean(saving[profile.token]) ? 'bg-slate-700 opacity-60 cursor-not-allowed' : 'bg-cyan-600 hover:bg-cyan-500 shadow-cyan-950 cursor-pointer'">
-                  <span x-text="Boolean(saving[profile.token]) ? 'Saving & Restarting...' : 'Save & Hot-Reload'"></span>
+                  <span x-text="Boolean(saving[profile.token]) ? t('btn_saving') : t('btn_save_reload')"></span>
                 </button>
               </div>
             </div>
@@ -569,8 +608,351 @@
   </div>
 
   <script>
+    const I18N = {
+      ja: {
+        btn_play_urls: "🚀 視聴URL",
+        btn_diagnostics: "📥 診断出力",
+        btn_refresh: "更新",
+        stat_active_profiles: "稼働プロファイル",
+        stat_rtsp_clients: "RTSPクライアント数",
+        stat_throughput: "送信スループット",
+        stat_packets: "送信パケット数",
+        stat_uptime: "稼働時間",
+        tab_profiles: "カメラ & 配信プロファイル",
+        tab_logs: "ライブコンソールログ",
+        tab_clients: "接続中RTSPクライアント",
+        tab_system: "システム & バックアップ",
+        sec_security: "セキュリティ & 認証設定",
+        btn_save_auth: "認証モード保存",
+        label_auth_mode: "認証方式",
+        opt_no_auth: "認証なし (No Auth - 自由アクセス)",
+        label_user: "ユーザー名",
+        label_pass: "パスワード",
+        sec_profiles_title: "映像・音声プロファイル",
+        btn_add_profile: "+ プロファイル追加",
+        btn_copy_url: "URLコピー",
+        btn_delete: "✕ 削除",
+        label_resolution: "解像度 (幅 x 高)",
+        opt_custom_res: "-- プリセット選択 --",
+        label_fps_gop: "FPS / GOP",
+        label_video_codec: "映像コーデック",
+        label_bitrate_mode: "ビットレート制御",
+        label_video_bitrate: "映像ビットレート (kbps)",
+        label_pattern: "テストパターン生成器",
+        label_audio_mode: "音声モード",
+        label_audio_codec: "音声コーデック",
+        label_audio_bitrate: "音声ビットレート (kbps)",
+        label_osd_text: "カスタム OSD 文字重畳",
+        chk_noise: "センサノイズシミュレート",
+        chk_motion_box: "動体検知用ボックス描画 (VMS検証用)",
+        btn_save_reload: "保存 & ホットリロード",
+        btn_saving: "保存・再起動中...",
+        toast_copied: "クリップボードにコピーしました！",
+        toast_saved: "プロファイルを更新し、ホットリロードしました！",
+        toast_auth_saved: "認証設定を保存しました！",
+        ws_live: "WebSocket 接続中",
+        ws_disconnected: "切断"
+      },
+      en: {
+        btn_play_urls: "🚀 Play URLs",
+        btn_diagnostics: "📥 Diagnostics",
+        btn_refresh: "Refresh",
+        stat_active_profiles: "Active Profiles",
+        stat_rtsp_clients: "RTSP Clients",
+        stat_throughput: "Out Throughput",
+        stat_packets: "Packets Dispatched",
+        stat_uptime: "Server Uptime",
+        tab_profiles: "Camera & Stream Profiles",
+        tab_logs: "Live Console Logs",
+        tab_clients: "Active RTSP Clients",
+        tab_system: "System & Backup",
+        sec_security: "Security & Authentication",
+        btn_save_auth: "Save Auth Mode",
+        label_auth_mode: "Auth Mode",
+        opt_no_auth: "No Auth (Free access)",
+        label_user: "User",
+        label_pass: "Password",
+        sec_profiles_title: "Video & Audio Profiles",
+        btn_add_profile: "+ Add Profile",
+        btn_copy_url: "Copy URL",
+        btn_delete: "✕ Delete",
+        label_resolution: "Resolution (W x H)",
+        opt_custom_res: "-- Preset --",
+        label_fps_gop: "FPS / GOP",
+        label_video_codec: "Video Codec",
+        label_bitrate_mode: "Bitrate Mode",
+        label_video_bitrate: "Video Bitrate (kbps)",
+        label_pattern: "Pattern Generator",
+        label_audio_mode: "Audio Mode",
+        label_audio_codec: "Audio Codec",
+        label_audio_bitrate: "Audio Bitrate (kbps)",
+        label_osd_text: "Custom OSD Text Overlay",
+        chk_noise: "Simulate Sensor Noise",
+        chk_motion_box: "Moving Target Box (VMS Motion Test)",
+        btn_save_reload: "Save & Hot-Reload",
+        btn_saving: "Saving & Restarting...",
+        toast_copied: "Copied to clipboard!",
+        toast_saved: "Profile updated and hot-reloaded!",
+        toast_auth_saved: "Auth settings updated!",
+        ws_live: "WebSocket Live",
+        ws_disconnected: "Disconnected"
+      },
+      zh: {
+        btn_play_urls: "🚀 播放URL",
+        btn_diagnostics: "📥 诊断信息",
+        btn_refresh: "刷新",
+        stat_active_profiles: "活动配置文件",
+        stat_rtsp_clients: "RTSP 客户端",
+        stat_throughput: "输出吞吐量",
+        stat_packets: "已发送数据包",
+        stat_uptime: "服务器运行时间",
+        tab_profiles: "摄像头与流配置",
+        tab_logs: "实时控制台日志",
+        tab_clients: "活跃 RTSP 客户端",
+        tab_system: "系统与备份",
+        sec_security: "安全与认证设置",
+        btn_save_auth: "保存认证模式",
+        label_auth_mode: "认证模式",
+        opt_no_auth: "无认证 (自由访问)",
+        label_user: "用户名",
+        label_pass: "密码",
+        sec_profiles_title: "视频与音频配置文件",
+        btn_add_profile: "+ 添加配置",
+        btn_copy_url: "复制 URL",
+        btn_delete: "✕ 删除",
+        label_resolution: "分辨率 (宽 x 高)",
+        opt_custom_res: "-- 预设分辨率 --",
+        label_fps_gop: "FPS / GOP",
+        label_video_codec: "视频编码",
+        label_bitrate_mode: "码率控制",
+        label_video_bitrate: "视频码率 (kbps)",
+        label_pattern: "测试图像发生器",
+        label_audio_mode: "音频模式",
+        label_audio_codec: "音频编码",
+        label_audio_bitrate: "音频码率 (kbps)",
+        label_osd_text: "自定义 OSD 文本",
+        chk_noise: "模拟传感器噪点",
+        chk_motion_box: "移动目标检测框 (VMS测试)",
+        btn_save_reload: "保存并热重载",
+        btn_saving: "正在保存并重启...",
+        toast_copied: "已复制到剪贴板！",
+        toast_saved: "配置已更新并热重载！",
+        toast_auth_saved: "认证设置已保存！",
+        ws_live: "WebSocket 正常",
+        ws_disconnected: "连接断开"
+      },
+      ko: {
+        btn_play_urls: "🚀 재생 URL",
+        btn_diagnostics: "📥 진단 번들",
+        btn_refresh: "새로고침",
+        stat_active_profiles: "활성 프로필",
+        stat_rtsp_clients: "RTSP 클라이언트",
+        stat_throughput: "전송 대역폭",
+        stat_packets: "전송 패킷 수",
+        stat_uptime: "가동 시간",
+        tab_profiles: "카메라 및 스트림 프로필",
+        tab_logs: "실시간 콘솔 로그",
+        tab_clients: "접속된 RTSP 클라이언트",
+        tab_system: "시스템 및 백업",
+        sec_security: "보안 및 인증 설정",
+        btn_save_auth: "인증 모드 저장",
+        label_auth_mode: "인증 모드",
+        opt_no_auth: "인증 없음 (자유 접근)",
+        label_user: "사용자명",
+        label_pass: "비밀번호",
+        sec_profiles_title: "비디오 및 오디오 프로필",
+        btn_add_profile: "+ 프로필 추가",
+        btn_copy_url: "URL 복사",
+        btn_delete: "✕ 삭제",
+        label_resolution: "해상도 (가로 x 세로)",
+        opt_custom_res: "-- 프리셋 선택 --",
+        label_fps_gop: "FPS / GOP",
+        label_video_codec: "비디오 코덱",
+        label_bitrate_mode: "비트레이트 모드",
+        label_video_bitrate: "비디오 비트레이트 (kbps)",
+        label_pattern: "패턴 생성기",
+        label_audio_mode: "오디오 모드",
+        label_audio_codec: "오디오 코덱",
+        label_audio_bitrate: "오디오 비트레이트 (kbps)",
+        label_osd_text: "사용자 지정 OSD 텍스트",
+        chk_noise: "센서 노이즈 시뮬레이션",
+        chk_motion_box: "움직이는 바운딩 박스 (VMS 모션 테스트)",
+        btn_save_reload: "저장 및 핫 리로드",
+        btn_saving: "저장 및 재시작 중...",
+        toast_copied: "클립보드에 복사되었습니다!",
+        toast_saved: "프로필이 업데이트되고 핫 리로드되었습니다!",
+        toast_auth_saved: "인증 설정이 저장되었습니다!",
+        ws_live: "WebSocket 연결됨",
+        ws_disconnected: "연결 끊김"
+      },
+      es: {
+        btn_play_urls: "🚀 URLs de Transmisión",
+        btn_diagnostics: "📥 Diagnósticos",
+        btn_refresh: "Actualizar",
+        stat_active_profiles: "Perfiles Activos",
+        stat_rtsp_clients: "Clientes RTSP",
+        stat_throughput: "Rendimiento Saliente",
+        stat_packets: "Paquetes Enviados",
+        stat_uptime: "Tiempo de Actividad",
+        tab_profiles: "Perfiles de Cámara",
+        tab_logs: "Consola en Vivo",
+        tab_clients: "Clientes RTSP Activos",
+        tab_system: "Sistema y Respaldo",
+        sec_security: "Seguridad y Autenticación",
+        btn_save_auth: "Guardar Autenticación",
+        label_auth_mode: "Modo de Autenticación",
+        opt_no_auth: "Sin Autenticación (Acceso Libre)",
+        label_user: "Usuario",
+        label_pass: "Contraseña",
+        sec_profiles_title: "Perfiles de Video y Audio",
+        btn_add_profile: "+ Añadir Perfil",
+        btn_copy_url: "Copiar URL",
+        btn_delete: "✕ Eliminar",
+        label_resolution: "Resolución (Ancho x Alto)",
+        opt_custom_res: "-- Preajuste --",
+        label_fps_gop: "FPS / GOP",
+        label_video_codec: "Códec de Video",
+        label_bitrate_mode: "Modo de Tasa de Bits",
+        label_video_bitrate: "Tasa de Bits de Video (kbps)",
+        label_pattern: "Generador de Patrones",
+        label_audio_mode: "Modo de Audio",
+        label_audio_codec: "Códec de Audio",
+        label_audio_bitrate: "Tasa de Bits de Audio (kbps)",
+        label_osd_text: "Texto OSD Personalizado",
+        chk_noise: "Simular Ruido de Sensor",
+        chk_motion_box: "Recuadro en Movimiento (Prueba VMS)",
+        btn_save_reload: "Guardar y Recargar",
+        btn_saving: "Guardando y reiniciando...",
+        toast_copied: "¡Copiado al portapapeles!",
+        toast_saved: "¡Perfil actualizado y recargado!",
+        toast_auth_saved: "¡Configuración de autenticación guardada!",
+        ws_live: "WebSocket En Vivo",
+        ws_disconnected: "Desconectado"
+      },
+      fr: {
+        btn_play_urls: "🚀 URLs de Flux",
+        btn_diagnostics: "📥 Diagnostics",
+        btn_refresh: "Actualiser",
+        stat_active_profiles: "Profils Actifs",
+        stat_rtsp_clients: "Clients RTSP",
+        stat_throughput: "Débit Sortant",
+        stat_packets: "Paquets Envoyés",
+        stat_uptime: "Temps de Fonctionnement",
+        tab_profiles: "Profils Caméra & Flux",
+        tab_logs: "Journaux en Direct",
+        tab_clients: "Clients RTSP Actifs",
+        tab_system: "Système & Sauvegarde",
+        sec_security: "Sécurité & Authentification",
+        btn_save_auth: "Enregistrer l'Auth",
+        label_auth_mode: "Mode d'Authentification",
+        opt_no_auth: "Aucune Authentification",
+        label_user: "Utilisateur",
+        label_pass: "Mot de Passe",
+        sec_profiles_title: "Profils Vidéo & Audio",
+        btn_add_profile: "+ Ajouter un Profil",
+        btn_copy_url: "Copier l'URL",
+        btn_delete: "✕ Supprimer",
+        label_resolution: "Résolution (L x H)",
+        opt_custom_res: "-- Préréglage --",
+        label_fps_gop: "FPS / GOP",
+        label_video_codec: "Codec Vidéo",
+        label_bitrate_mode: "Mode de Débit",
+        label_video_bitrate: "Débit Vidéo (kbps)",
+        label_pattern: "Générateur de Mire",
+        label_audio_mode: "Mode Audio",
+        label_audio_codec: "Codec Audio",
+        label_audio_bitrate: "Débit Audio (kbps)",
+        label_osd_text: "Texte OSD Personnalisé",
+        chk_noise: "Simuler Bruit Capteur",
+        chk_motion_box: "Boîte de Détection de Mouvement",
+        btn_save_reload: "Sauvegarder & Recharger",
+        btn_saving: "Sauvegarde et redémarrage...",
+        toast_copied: "Copié dans le presse-papiers !",
+        toast_saved: "Profil mis à jour et rechargé !",
+        toast_auth_saved: "Paramètres d'authentification enregistrés !",
+        ws_live: "WebSocket En Ligne",
+        ws_disconnected: "Déconnecté"
+      },
+      de: {
+        btn_play_urls: "🚀 Stream URLs",
+        btn_diagnostics: "📥 Diagnose",
+        btn_refresh: "Aktualisieren",
+        stat_active_profiles: "Aktive Profile",
+        stat_rtsp_clients: "RTSP-Clients",
+        stat_throughput: "Ausgangs-Durchsatz",
+        stat_packets: "Gesendete Pakete",
+        stat_uptime: "Betriebszeit",
+        tab_profiles: "Kamera & Stream-Profile",
+        tab_logs: "Live-Konsolenprotokolle",
+        tab_clients: "Aktive RTSP-Clients",
+        tab_system: "System & Backup",
+        sec_security: "Sicherheit & Authentifizierung",
+        btn_save_auth: "Auth-Modus Speichern",
+        label_auth_mode: "Authentifizierungsmodus",
+        opt_no_auth: "Keine Authentifizierung (Freier Zugriff)",
+        label_user: "Benutzer",
+        label_pass: "Passwort",
+        sec_profiles_title: "Video- & Audioprofile",
+        btn_add_profile: "+ Profil Hinzufügen",
+        btn_copy_url: "URL Kopieren",
+        btn_delete: "✕ Löschen",
+        label_resolution: "Auflösung (B x H)",
+        opt_custom_res: "-- Voreinstellung --",
+        label_fps_gop: "FPS / GOP",
+        label_video_codec: "Video-Codec",
+        label_bitrate_mode: "Bitratenmodus",
+        label_video_bitrate: "Video-Bitrate (kbps)",
+        label_pattern: "Testbildgenerator",
+        label_audio_mode: "Audiomodus",
+        label_audio_codec: "Audio-Codec",
+        label_audio_bitrate: "Audio-Bitrate (kbps)",
+        label_osd_text: "Benutzerdefinierter OSD-Text",
+        chk_noise: "Sensorrauschen simulieren",
+        chk_motion_box: "Bewegtes Zielrechteck (VMS-Test)",
+        btn_save_reload: "Speichern & Neu Laden",
+        btn_saving: "Speichern & Neustarten...",
+        toast_copied: "In die Zwischenablage kopiert!",
+        toast_saved: "Profil aktualisiert und neu geladen!",
+        toast_auth_saved: "Authentifizierungseinstellungen gespeichert!",
+        ws_live: "WebSocket Verbunden",
+        ws_disconnected: "Getrennt"
+      }
+    };
+
+    function detectBrowserLang() {
+      const saved = localStorage.getItem('mockcam_lang');
+      if (saved && I18N[saved]) return saved;
+      const navLang = (navigator.language || navigator.userLanguage || 'en').toLowerCase();
+      if (navLang.startsWith('ja')) return 'ja';
+      if (navLang.startsWith('zh')) return 'zh';
+      if (navLang.startsWith('ko')) return 'ko';
+      if (navLang.startsWith('es')) return 'es';
+      if (navLang.startsWith('fr')) return 'fr';
+      if (navLang.startsWith('de')) return 'de';
+      return 'en';
+    }
+
     function mockCamApp() {
       return {
+        currentLang: detectBrowserLang(),
+        t(key) {
+          const dict = I18N[this.currentLang] || I18N.en;
+          return dict[key] || I18N.en[key] || key;
+        },
+        setLang(lang) {
+          if (I18N[lang]) {
+            this.currentLang = lang;
+            localStorage.setItem('mockcam_lang', lang);
+          }
+        },
+        onResolutionPresetChange(profile, val) {
+          if (!val) return;
+          const parts = val.split('x');
+          if (parts.length === 2) {
+            profile.video.resolution.width = parseInt(parts[0], 10);
+            profile.video.resolution.height = parseInt(parts[1], 10);
+          }
+        },
         currentTab: 'profiles',
         status: {},
         config: {

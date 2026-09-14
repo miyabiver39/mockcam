@@ -122,18 +122,18 @@ func (s *Supervisor) runWorkerLoop(ctx context.Context, w *profileWorker, rtspPo
 		}
 
 		stderrMsg := strings.TrimSpace(stderrBuf.String())
-		if len(stderrMsg) > 300 {
-			stderrMsg = stderrMsg[len(stderrMsg)-300:]
+		if len(stderrMsg) > 500 {
+			stderrMsg = stderrMsg[len(stderrMsg)-500:]
 		}
 
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(1 * time.Second):
-			if waitErr != nil && stderrMsg != "" {
+			if waitErr != nil {
 				log.Printf("[supervisor] FFmpeg exited for profile '%s' (err: %v): %s, restarting...", w.token, waitErr, stderrMsg)
 			} else {
-				log.Printf("[supervisor] FFmpeg exited for profile '%s', restarting...", w.token)
+				log.Printf("[supervisor] FFmpeg completed unexpectedly for profile '%s' (stderr: %s), restarting...", w.token, stderrMsg)
 			}
 		}
 	}

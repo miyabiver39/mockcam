@@ -86,3 +86,50 @@ func TestBuildFFmpegArgsVBR(t *testing.T) {
 		t.Errorf("expected silent audio filter in args: %s", joined)
 	}
 }
+
+func TestBuildFFmpegArgsCodecs(t *testing.T) {
+	// Test VP9 and G711A
+	profVP9 := config.ProfileConfig{
+		Token: "Profile_VP9",
+		Video: config.VideoConfig{
+			Codec:       "VP9",
+			Resolution:  config.Resolution{Width: 1920, Height: 1080},
+			BitrateMode: "CBR",
+		},
+		Audio: config.AudioConfig{
+			Enabled: true,
+			Codec:   "G711A",
+		},
+	}
+	argsVP9 := BuildFFmpegArgs(profVP9, 8554)
+	joinedVP9 := strings.Join(argsVP9, " ")
+	if !strings.Contains(joinedVP9, "-c:v libvpx-vp9") {
+		t.Errorf("expected libvpx-vp9: %s", joinedVP9)
+	}
+	if !strings.Contains(joinedVP9, "-c:a pcm_alaw") {
+		t.Errorf("expected pcm_alaw: %s", joinedVP9)
+	}
+
+	// Test AV1 and G726
+	profAV1 := config.ProfileConfig{
+		Token: "Profile_AV1",
+		Video: config.VideoConfig{
+			Codec:       "AV1",
+			Resolution:  config.Resolution{Width: 1280, Height: 720},
+			BitrateMode: "VBR",
+		},
+		Audio: config.AudioConfig{
+			Enabled:     true,
+			Codec:       "G726",
+			BitrateKbps: 32,
+		},
+	}
+	argsAV1 := BuildFFmpegArgs(profAV1, 8554)
+	joinedAV1 := strings.Join(argsAV1, " ")
+	if !strings.Contains(joinedAV1, "-c:v libsvtav1") {
+		t.Errorf("expected libsvtav1: %s", joinedAV1)
+	}
+	if !strings.Contains(joinedAV1, "-c:a g726") {
+		t.Errorf("expected g726: %s", joinedAV1)
+	}
+}

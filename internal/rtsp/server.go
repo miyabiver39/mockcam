@@ -86,9 +86,10 @@ func (s *Server) Start() error {
 	}
 
 	s.rtspServer = &gortsplib.Server{
-		Handler:        s,
-		RTSPAddress:    fmt.Sprintf(":%d", port),
-		WriteQueueSize: 4096,
+		Handler:                  s,
+		RTSPAddress:              fmt.Sprintf(":%d", port),
+		WriteQueueSize:           8192,
+		DisableRTCPSenderReports: true,
 	}
 
 	log.Printf("[rtsp] Starting RTSP server on :%d...", port)

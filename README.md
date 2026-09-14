@@ -1,7 +1,7 @@
 # MockCam - 仮想ネットワークカメラエミュレーター
 
-[![CI/CD Pipeline](https://github.com/your-org/mockcam/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/mockcam/actions)
-[![Release](https://img.shields.io/github/v/release/your-org/mockcam?include_prereleases&color=06b6d4)](https://github.com/your-org/mockcam/releases)
+[![CI/CD Pipeline](https://github.com/miyabiver39/mockcam/actions/workflows/ci.yml/badge.svg)](https://github.com/miyabiver39/mockcam/actions)
+[![Release](https://img.shields.io/github/v/release/miyabiver39/mockcam?include_prereleases&color=06b6d4)](https://github.com/miyabiver39/mockcam/releases)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go)](go.mod)
 [![Docker](https://img.shields.io/badge/Docker-Multi--Arch-2496ED?logo=docker)](Dockerfile)
@@ -52,7 +52,7 @@ docker run -d \
   -p 8080:8080 \
   -p 3702:3702/udp \
   -v $(pwd)/config:/config \
-  ghcr.io/your-org/mockcam:latest
+  ghcr.io/miyabiver39/mockcam:latest
 ```
 
 ### 3. ローカルビルド & 実行 (Go 1.23+)

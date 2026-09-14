@@ -138,10 +138,16 @@ func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int) []string {
 	}
 
 	// Video Codec & Flags for zero-latency streaming
-	if strings.EqualFold(profile.Video.Codec, "H265") || strings.EqualFold(profile.Video.Codec, "HEVC") {
-		args = append(args, "-c:v", "libx265", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p")
-	} else {
-		args = append(args, "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-x264opts", "no-scenecut")
+	vCodec := strings.ToUpper(strings.TrimSpace(profile.Video.Codec))
+	switch vCodec {
+	case "H265", "HEVC":
+		args = append(args, "-c:v", "libx265", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-x265-params", "bframes=0:no-scenecut=1")
+	case "VP9":
+		args = append(args, "-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-pix_fmt", "yuv420p")
+	case "AV1":
+		args = append(args, "-c:v", "libsvtav1", "-preset", "12", "-pix_fmt", "yuv420p")
+	default: // H264 default
+		args = append(args, "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-bf", "0", "-x264opts", "no-scenecut:bframes=0:force-cfr=1")
 	}
 
 	// 4. Audio Encoding
@@ -154,17 +160,30 @@ func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int) []string {
 		if sampleRate <= 0 {
 			sampleRate = 44100
 		}
-		args = append(args, "-c:a", "aac", "-b:a", fmt.Sprintf("%dk", audioBitrate), "-ar", fmt.Sprintf("%d", sampleRate))
+
+		aCodec := strings.ToUpper(strings.TrimSpace(profile.Audio.Codec))
+		switch aCodec {
+		case "G711A", "PCMA", "ALAW":
+			args = append(args, "-c:a", "pcm_alaw", "-ar", "8000", "-ac", "1")
+		case "G711U", "PCMU", "MULAW":
+			args = append(args, "-c:a", "pcm_mulaw", "-ar", "8000", "-ac", "1")
+		case "G726", "ADPCM_G726":
+			args = append(args, "-c:a", "g726", "-b:a", "32k", "-ar", "8000", "-ac", "1")
+		default: // AAC default
+			args = append(args, "-c:a", "aac", "-b:a", fmt.Sprintf("%dk", audioBitrate), "-ar", fmt.Sprintf("%d", sampleRate))
+		}
 	} else {
 		args = append(args, "-an")
 	}
 
 	// 5. Output format & URL with TCP interleaved buffer optimization
+	// Note: using -rtpflags skip_rtcp prevents FFmpeg from sending conflicting sender reports to the RTSP proxy
 	destURL := fmt.Sprintf("rtsp://127.0.0.1:%d/live/%s", rtspPort, profile.Token)
 	args = append(args,
 		"-rtsp_transport", "tcp",
-		"-buffer_size", "1024000",
-		"-max_delay", "500000",
+		"-rtpflags", "skip_rtcp",
+		"-buffer_size", "2048000",
+		"-max_delay", "200000",
 		"-f", "rtsp", destURL,
 	)
 
