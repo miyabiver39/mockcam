@@ -133,5 +133,5 @@ docker compose up -d --build             # コンテナ起動
 
 - README のバッジ・イメージ名 `your-org/mockcam` はプレースホルダーです。
 - Windows ではマルチキャスト待受 (`WS-Discovery`) が失敗することがありますが、警告のみで起動は継続します。
-- Windows のローカル環境では `go test -race` が MinGW gcc の警告で失敗することがあります。その場合は `-race` なしで実行し、race 検査は CI（Linux）に任せてください。
+- Windows のローカル環境では `go test -race` が MinGW gcc の警告で失敗することがあります。その場合は `MSYS_NO_PATHCONV=1 docker run --rm -v "C:\path\to\mockcam:/src" -w /src -e GOFLAGS=-buildvcs=false golang:1.26 go test -race ./...` で Linux 上の race 検査を行ってから push してください。
 - `internal/web/static/index.html` は CDN（Tailwind / Alpine.js）に依存するため、オフライン環境では UI のスタイルが崩れます。

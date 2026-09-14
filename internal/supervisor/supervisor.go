@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -60,7 +61,7 @@ type profileWorker struct {
 	done    chan struct{}
 
 	mu       sync.Mutex
-	cmd      *exec.Cmd
+	proc     *os.Process // set only after a successful Start, guarded by mu
 	stopping bool
 	restarts int
 }
@@ -147,34 +148,42 @@ func (s *Supervisor) runWorkerLoop(ctx context.Context, w *profileWorker, rtspPo
 			w.mu.Unlock()
 			return
 		}
-		args := BuildFFmpegArgs(w.profile, rtspPort, httpPort)
-		cmd := s.newCommand(ctx, s.binary, args...)
-		var stderrBuf bytes.Buffer
-		cmd.Stdout = nil
-		cmd.Stderr = &stderrBuf
-		w.cmd = cmd
 		if attempt > 0 {
 			w.restarts++
 		}
 		w.mu.Unlock()
 
+		// The command is built and started outside the lock: cmd.Start writes
+		// cmd.Process, so the handle is only published (under mu) afterwards.
+		args := BuildFFmpegArgs(w.profile, rtspPort, httpPort)
+		cmd := s.newCommand(ctx, s.binary, args...)
+		var stderrBuf bytes.Buffer
+		cmd.Stdout = nil
+		cmd.Stderr = &stderrBuf
+
 		log.Printf("[supervisor] Starting FFmpeg for profile '%s'...", w.token)
 		if err := cmd.Start(); err != nil {
 			log.Printf("[supervisor] Failed to start FFmpeg for profile '%s': %v", w.token, err)
-			w.mu.Lock()
-			w.cmd = nil
-			w.mu.Unlock()
 			if !sleepCtx(ctx, s.startFailDelay) {
 				return
 			}
 			continue
 		}
 
+		w.mu.Lock()
+		w.proc = cmd.Process
+		stopRequested := w.stopping
+		w.mu.Unlock()
+		if stopRequested {
+			// A stop raced with the start: terminate the fresh process ourselves.
+			_ = cmd.Process.Kill()
+		}
+
 		waitErr := cmd.Wait()
 
 		w.mu.Lock()
 		stopping := w.stopping
-		w.cmd = nil
+		w.proc = nil
 		w.mu.Unlock()
 		if stopping || ctx.Err() != nil {
 			return
@@ -226,17 +235,17 @@ func (s *Supervisor) StopProfile(token string) {
 func (s *Supervisor) stopWorker(w *profileWorker) {
 	w.mu.Lock()
 	w.stopping = true
-	cmd := w.cmd
+	proc := w.proc
 	w.mu.Unlock()
 	w.cancel()
 
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Signal(syscall.SIGTERM) // no-op on Windows; Kill follows
+	if proc != nil {
+		_ = proc.Signal(syscall.SIGTERM) // no-op on Windows; Kill follows
 		select {
 		case <-w.done:
 			return
 		case <-time.After(s.stopGrace):
-			_ = cmd.Process.Kill()
+			_ = proc.Kill()
 		}
 	}
 
@@ -271,9 +280,9 @@ func (s *Supervisor) Status() []WorkerStatus {
 	for _, w := range s.workers {
 		w.mu.Lock()
 		st := WorkerStatus{Token: w.token, Restarts: w.restarts}
-		if w.cmd != nil && w.cmd.Process != nil {
+		if w.proc != nil {
 			st.Running = true
-			st.PID = w.cmd.Process.Pid
+			st.PID = w.proc.Pid
 		}
 		w.mu.Unlock()
 		out = append(out, st)
