@@ -1,5 +1,8 @@
 package config
 
+// AppVersion represents the current software release version.
+const AppVersion = "1.2.1"
+
 // Resolution defines video width and height.
 type Resolution struct {
 	Width  int `json:"width"`
@@ -101,7 +104,7 @@ func DefaultConfig() *Config {
 			DeviceInfo: DeviceInfoConfig{
 				Manufacturer:    "MockCam Standard",
 				Model:           "MC-Pro-S",
-				FirmwareVersion: "1.0.0",
+				FirmwareVersion: AppVersion,
 				SerialNumber:    "MC2026090001",
 				HardwareID:      "v1.0",
 			},

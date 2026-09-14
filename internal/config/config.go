@@ -86,6 +86,14 @@ func (m *Manager) loadOrInit() error {
 		return fmt.Errorf("failed to parse config JSON from %s: %w", m.path, err)
 	}
 
+	// Always sync FirmwareVersion with the running AppVersion
+	if cfg.Server.DeviceInfo.FirmwareVersion != AppVersion {
+		cfg.Server.DeviceInfo.FirmwareVersion = AppVersion
+		if updatedData, err := json.MarshalIndent(cfg, "", "  "); err == nil {
+			_ = os.WriteFile(m.path, updatedData, 0644)
+		}
+	}
+
 	m.cfg = &cfg
 	return nil
 }

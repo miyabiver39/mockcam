@@ -70,9 +70,9 @@ func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int) []string {
 			filterParts = append(filterParts, fmt.Sprintf("drawbox=x='(w-160)*(0.5+0.5*sin(t*1.5))':y=60:w=160:h=120:color=red@0.8:t=4"))
 		}
 
-		// Real-time clock overlay
+		// Real-time ISO 8601 clock overlay with PTS milliseconds
 		if profile.Video.ShowClock || profile.Video.OsdText == "" {
-			filterParts = append(filterParts, "drawtext=text='%{pts\\:hms}':x=(w-tw)/2:y=h-th-20:fontsize=32:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=5")
+			filterParts = append(filterParts, "drawtext=text='%{localtime\\:%Y-%m-%dT%H\\\\\\:%M\\\\\\:%S%z}':x=(w-tw)/2:y=h-th-20:fontsize=32:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=5")
 		}
 
 		// Custom OSD text overlay

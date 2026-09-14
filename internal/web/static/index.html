@@ -36,7 +36,7 @@
         <div>
           <h1 class="text-lg font-bold text-white tracking-wide flex items-center space-x-2">
             <span>MockCam</span>
-            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" x-text="status.version || 'v1.0.0'"></span>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" x-text="status.version ? (status.version.startsWith('v') ? status.version : 'v' + status.version) : 'v1.2.1'"></span>
           </h1>
           <p class="text-xs text-slate-400" x-text="status.model || 'MC-Pro-S'"></p>
         </div>
@@ -217,11 +217,15 @@
                 </div>
               </div>
 
+              <!-- Form Fields Grid (2 columns on mobile/sm, 2 columns on lg) -->
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                 <!-- Resolution with Presets & Custom Input -->
                 <div class="space-y-1">
                   <div class="flex items-center justify-between">
                     <label class="block text-slate-400 font-medium" x-text="t('label_resolution')"></label>
-                    <select @change="onResolutionPresetChange(profile, $event.target.value)" class="bg-slate-950 border border-slate-700 text-[11px] rounded px-1.5 py-0.5 text-slate-300">
+                    <select :value="getResolutionPreset(profile)"
+                            @change="applyResolutionPreset(profile, $event.target.value)"
+                            class="bg-slate-950 border border-slate-700 text-[11px] rounded px-1.5 py-0.5 text-cyan-400 font-mono">
                       <option value="" x-text="t('opt_custom_res')">-- Preset --</option>
                       <option value="3840x2160">4K UHD (3840x2160)</option>
                       <option value="2560x1440">2K QHD (2560x1440)</option>
@@ -307,7 +311,7 @@
                   <input type="number" x-model.number="profile.audio.bitrate_kbps" step="16" min="16" max="320" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center font-mono">
                 </div>
 
-                <div class="sm:col-span-3">
+                <div class="sm:col-span-2">
                   <label class="block text-slate-400 mb-1" x-text="t('label_osd_text')"></label>
                   <input type="text" x-model="profile.video.osd_text" placeholder="e.g. [Camera 01 - Gate]" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white">
                 </div>
@@ -328,10 +332,10 @@
               <!-- Action button -->
               <div class="flex items-center justify-end pt-2 border-t border-slate-800">
                 <button @click="saveProfile(profile.token, profile)"
-                        :disabled="Boolean(saving[profile.token])"
+                        :disabled="isSaving(profile.token)"
                         class="px-4 py-1.5 text-xs font-semibold rounded-lg text-white transition flex items-center space-x-1.5 shadow-lg"
-                        :class="Boolean(saving[profile.token]) ? 'bg-slate-700 opacity-60 cursor-not-allowed' : 'bg-cyan-600 hover:bg-cyan-500 shadow-cyan-950 cursor-pointer'">
-                  <span x-text="Boolean(saving[profile.token]) ? t('btn_saving') : t('btn_save_reload')"></span>
+                        :class="isSaving(profile.token) ? 'bg-slate-700 opacity-60 cursor-not-allowed' : 'bg-cyan-600 hover:bg-cyan-500 shadow-cyan-950 cursor-pointer'">
+                  <span x-text="isSaving(profile.token) ? t('btn_saving') : t('btn_save_reload')"></span>
                 </button>
               </div>
             </div>
@@ -945,13 +949,30 @@
             localStorage.setItem('mockcam_lang', lang);
           }
         },
-        onResolutionPresetChange(profile, val) {
+        getResolutionPreset(profile) {
+          if (!profile || !profile.video || !profile.video.resolution) return '';
+          const w = profile.video.resolution.width;
+          const h = profile.video.resolution.height;
+          const val = `${w}x${h}`;
+          const presets = ['3840x2160', '2560x1440', '1920x1080', '1280x720', '854x480', '640x360'];
+          return presets.includes(val) ? val : '';
+        },
+        applyResolutionPreset(profile, val) {
           if (!val) return;
           const parts = val.split('x');
           if (parts.length === 2) {
-            profile.video.resolution.width = parseInt(parts[0], 10);
-            profile.video.resolution.height = parseInt(parts[1], 10);
+            const w = parseInt(parts[0], 10);
+            const h = parseInt(parts[1], 10);
+            if (!isNaN(w) && !isNaN(h) && w > 0 && h > 0) {
+              profile.video.resolution.width = w;
+              profile.video.resolution.height = h;
+              profile.video.resolution = { width: w, height: h };
+            }
           }
+        },
+        savingToken: null,
+        isSaving(token) {
+          return this.savingToken === token;
         },
         currentTab: 'profiles',
         status: {},
@@ -970,7 +991,6 @@
         },
         ptz: { pan: 0, tilt: 0, zoom: 0, is_moving: false },
         ptzPresets: [],
-        saving: { Profile_1: false, Profile_2: false },
         clients: [],
         logs: [],
         minLogLevel: 'INFO',
@@ -1071,15 +1091,20 @@
         },
 
         async saveProfile(token, profile) {
-          this.saving = { ...this.saving, [token]: true };
+          if (this.savingToken) return;
+          this.savingToken = token;
           try {
+            if (profile.video && profile.video.resolution) {
+              profile.video.resolution.width = parseInt(profile.video.resolution.width, 10) || 1920;
+              profile.video.resolution.height = parseInt(profile.video.resolution.height, 10) || 1080;
+            }
             const res = await fetch(`/api/profiles/${token}`, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(profile),
             });
             if (res.ok) {
-              this.showToast(`Profile '${token}' updated and hot-reloaded!`);
+              this.showToast(this.t('toast_saved'));
               await this.fetchConfig();
             } else {
               this.showToast(`Failed to update profile: ${await res.text()}`, 'error');
@@ -1087,7 +1112,7 @@
           } catch (e) {
             this.showToast(e.message, 'error');
           } finally {
-            this.saving = { ...this.saving, [token]: false };
+            this.savingToken = null;
           }
         },
 

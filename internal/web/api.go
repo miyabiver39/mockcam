@@ -173,6 +173,11 @@ func (h *APIHandler) handleProfiles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Close existing stream in RTSP server so players reconnect and SDP updates with new resolution/codecs
+		if h.rtspServer != nil {
+			h.rtspServer.CloseStream(token)
+		}
+
 		// Trigger FFmpeg supervisor hot reload for this profile
 		if h.supervisor != nil {
 			if err := h.supervisor.RestartProfile(token); err != nil {
