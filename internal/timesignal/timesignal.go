@@ -97,9 +97,10 @@ func (s *Service) HandleAudioStream(w http.ResponseWriter, r *http.Request) {
 			msIntoSec := nano / 1_000_000
 
 			// Determine if we need to start a time announcement
-			// Announce every 10 seconds: e.g. at :02, :12, :22, :32, :42, :52
+			// Announce every 10 seconds: start at :01, :11, :21, :31, :41, :51
+			// so that speech finishes cleanly around :05 before the :07 preview chime.
 			currentMinSec := fmt.Sprintf("%02d:%02d", now.Minute(), (sec/10)*10)
-			if sec%10 == 2 && msIntoSec < 200 && currentMinSec != lastAnnouncedMinSec {
+			if sec%10 == 1 && msIntoSec < 200 && currentMinSec != lastAnnouncedMinSec {
 				lastAnnouncedMinSec = currentMinSec
 				targetSec := ((sec/10)*10 + 10) % 60
 				targetMin := now.Minute()
@@ -202,39 +203,13 @@ func (s *Service) buildPhrase(lang string, hour, min, sec int) string {
 		h12 = 12
 	}
 
-	// Natural Japanese hours
-	hourWords := map[int]string{
-		1: "いちじ", 2: "にじ", 3: "さんじ", 4: "よじ", 5: "ごじ", 6: "ろくじ",
-		7: "しちじ", 8: "はちじ", 9: "くじ", 10: "じゅうじ", 11: "じゅういちじ", 12: "じゅうにじ",
-	}
-	hStr := hourWords[h12]
-	if hStr == "" {
-		hStr = fmt.Sprintf("%dじ", h12)
-	}
-
-	// Natural Japanese minutes
-	minStr := formatJapaneseMinutes(min)
-
 	if sec == 0 {
-		return fmt.Sprintf("%s、%s、%sをお知らせします。", period, hStr, minStr)
+		if min == 0 {
+			return fmt.Sprintf("%s%d時ちょうどをお知らせします", period, h12)
+		}
+		return fmt.Sprintf("%s%d時%d分をお知らせします", period, h12, min)
 	}
-	return fmt.Sprintf("%s、%d秒をお知らせします。", minStr, sec)
-}
-
-func formatJapaneseMinutes(m int) string {
-	if m == 0 {
-		return "ちょうと"
-	}
-	units := []string{"", "いっぷん", "にふん", "さんぷん", "よんぷん", "ごふん", "ろっぷん", "ななふん", "はっぷん", "きゅうふん"}
-	tens := []string{"", "じゅう", "にじゅう", "さんじゅう", "よんじゅう", "ごじゅう"}
-
-	t := m / 10
-	u := m % 10
-
-	if u == 0 {
-		return tens[t] + "っぷん"
-	}
-	return tens[t] + units[u]
+	return fmt.Sprintf("%d分%d秒をお知らせします", min, sec)
 }
 
 func (s *Service) synthesizeSpeech(text, lang string) []int16 {
@@ -277,7 +252,7 @@ func (s *Service) synthesizeSpeech(text, lang string) []int16 {
 			tmpWav := filepath.Join(os.TempDir(), fmt.Sprintf("mockcam_ojt_%d.wav", time.Now().UnixNano()))
 			// Standard community-recommended parameters for natural female voice:
 			//   -s 22050  sample rate (Hz)
-			//   -r 0.9    speaking rate (slightly slower for clarity)
+			//   -r 1.25   speaking rate (clear and natural announcement cadence)
 			//   -a 0.55   all-pass constant (spectral envelope, standard for tohoku-f01)
 			//   -u 0.5    voiced/unvoiced threshold
 			cmd := exec.Command("open_jtalk",
@@ -285,7 +260,7 @@ func (s *Service) synthesizeSpeech(text, lang string) []int16 {
 				"-m", foundVoice,
 				"-ow", tmpWav,
 				"-s", "22050",
-				"-r", "0.9",
+				"-r", "1.25",
 				"-a", "0.55",
 				"-u", "0.5",
 			)
@@ -355,11 +330,62 @@ $s.Dispose();
 		pcmData = rawWAV[44:]
 	}
 
+	rawSamples := decodePCM(pcmData)
+	trimmedSamples := trimSilence(rawSamples, 250)
+
+	// Encode trimmed samples back for caching
+	trimmedBytes := make([]byte, len(trimmedSamples)*2)
+	for i, v := range trimmedSamples {
+		binary.LittleEndian.PutUint16(trimmedBytes[i*2:], uint16(v))
+	}
+
 	s.mu.Lock()
-	s.voiceCache[text] = pcmData
+	s.voiceCache[text] = trimmedBytes
 	s.mu.Unlock()
 
-	return decodePCM(pcmData)
+	return trimmedSamples
+}
+
+func trimSilence(samples []int16, threshold int16) []int16 {
+	if len(samples) == 0 {
+		return samples
+	}
+	start := 0
+	for start < len(samples) {
+		val := samples[start]
+		if val < 0 {
+			val = -val
+		}
+		if val > threshold {
+			break
+		}
+		start++
+	}
+	end := len(samples) - 1
+	for end > start {
+		val := samples[end]
+		if val < 0 {
+			val = -val
+		}
+		if val > threshold {
+			break
+		}
+		end--
+	}
+	if start >= end {
+		return samples
+	}
+	trimmed := samples[start : end+1]
+	// Apply micro 10ms fade-in and fade-out to prevent clicks
+	fadeLen := SampleRate * 10 / 1000
+	if len(trimmed) > fadeLen*2 {
+		for i := 0; i < fadeLen; i++ {
+			trimmed[i] = int16(float64(trimmed[i]) * float64(i) / float64(fadeLen))
+			lastIdx := len(trimmed) - 1 - i
+			trimmed[lastIdx] = int16(float64(trimmed[lastIdx]) * float64(i) / float64(fadeLen))
+		}
+	}
+	return trimmed
 }
 
 func decodePCM(pcmData []byte) []int16 {
