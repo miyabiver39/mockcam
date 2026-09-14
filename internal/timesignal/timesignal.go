@@ -128,29 +128,39 @@ func (s *Service) HandleAudioStream(w http.ResponseWriter, r *http.Request) {
 				phraseOffset += n
 			}
 
-			// 2. Synthesize authentic 117 Time Signal Chime
-			// When sec % 10 is 7, 8, 9 -> 440Hz tone (200ms)
-			// When sec % 10 is 0 -> 880Hz tone (700ms)
+			// 2. Synthesize official Japanese 440Hz / 880Hz Time Signal Beeps
+			// When sec % 10 is 7, 8, 9 -> 440Hz (A4) preview beeps ("ピッ", exact 100ms)
+			// When sec % 10 is 0       -> 880Hz (A5) main time chime ("ポーーーン", 1800ms with natural decay)
 			secMod10 := sec % 10
 			for i := 0; i < chunkSamples; i++ {
 				sampleMs := msIntoSec + (i * 1000 / SampleRate)
 				var toneSample float64 = 0
 
-				if (secMod10 == 7 || secMod10 == 8 || secMod10 == 9) && sampleMs < 200 {
-					// 440 Hz preview tone with smooth envelope
+				if (secMod10 == 7 || secMod10 == 8 || secMod10 == 9) && sampleMs < 100 {
+					// 440 Hz preview beep (crisp 100ms with 5ms anti-click micro fades)
 					phase := 2.0 * math.Pi * 440.0 * float64(sampleMs) / 1000.0
-					envelope := math.Sin(float64(sampleMs) / 200.0 * math.Pi)
-					toneSample = math.Sin(phase) * envelope * 0.45
-				} else if secMod10 == 0 && sampleMs < 700 {
-					// 880 Hz main time tone with exponential decay
+					env := 1.0
+					if sampleMs < 5 {
+						env = float64(sampleMs) / 5.0
+					} else if sampleMs > 95 {
+						env = float64(100-sampleMs) / 5.0
+					}
+					toneSample = math.Sin(phase) * env * 0.50
+				} else if secMod10 == 0 && sampleMs < 1800 {
+					// 880 Hz main time chime (1-octave higher A5 tone with sustained peak and smooth bell decay)
 					phase := 2.0 * math.Pi * 880.0 * float64(sampleMs) / 1000.0
-					envelope := math.Exp(-float64(sampleMs) / 350.0)
-					toneSample = math.Sin(phase) * envelope * 0.55
-				} else if sampleMs < 15 {
-					// Subtle 1-second ticking pulse at top of each second
-					tickPhase := 2.0 * math.Pi * 1200.0 * float64(sampleMs) / 1000.0
-					tickEnv := (1.0 - float64(sampleMs)/15.0)
-					toneSample = math.Sin(tickPhase) * tickEnv * 0.08
+					env := 1.0
+					if sampleMs < 5 {
+						env = float64(sampleMs) / 5.0
+					} else if sampleMs < 350 {
+						// Sustained primary tone
+						env = 1.0 - (float64(sampleMs-5)/350.0)*0.15
+					} else {
+						// Smooth exponential chime decay over remainder
+						decayTime := float64(sampleMs-350) / 1450.0
+						env = 0.85 * math.Exp(-decayTime*3.5)
+					}
+					toneSample = math.Sin(phase) * env * 0.55
 				}
 
 				if toneSample != 0 {
@@ -255,6 +265,7 @@ func (s *Service) synthesizeSpeech(text, lang string) []int16 {
 			//   -r 1.25   speaking rate (clear and natural announcement cadence)
 			//   -a 0.55   all-pass constant (spectral envelope, standard for tohoku-f01)
 			//   -u 0.5    voiced/unvoiced threshold
+			//   -fm 2.0   additional half-tones to raise pitch to a bright, pleasant tone
 			cmd := exec.Command("open_jtalk",
 				"-x", foundDic,
 				"-m", foundVoice,
@@ -263,6 +274,7 @@ func (s *Service) synthesizeSpeech(text, lang string) []int16 {
 				"-r", "1.25",
 				"-a", "0.55",
 				"-u", "0.5",
+				"-fm", "2.0",
 			)
 			cmd.Stdin = strings.NewReader(text)
 			if err := cmd.Run(); err == nil {
@@ -300,11 +312,11 @@ $s.Dispose();
 	if len(rawWAV) == 0 && s.hasEspeak {
 		voice := "ja"
 		speed := "130"
-		pitch := "52"
+		pitch := "62"
 		if lang == "en" {
 			voice = "en-us"
 			speed = "140"
-			pitch = "50"
+			pitch = "55"
 		}
 		cmdName := "espeak-ng"
 		if _, err := exec.LookPath(cmdName); err != nil {
