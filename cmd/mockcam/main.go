@@ -5,10 +5,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"mockcam/internal/auth"
 	"mockcam/internal/config"
+	"mockcam/internal/logger"
 	"mockcam/internal/onvif"
 	"mockcam/internal/rtsp"
 	"mockcam/internal/supervisor"
@@ -24,8 +26,8 @@ func main() {
 		configPath = config.GetDefaultPath()
 	}
 
-	log.Printf("[mockcam] Initializing MockCam virtual network camera...")
-	log.Printf("[mockcam] Using config file: %s", configPath)
+	logger.Infof("mockcam", "Initializing MockCam virtual network camera...")
+	logger.Infof("mockcam", "Using config file: %s", configPath)
 
 	// 1. Load configuration
 	cfgMgr, err := config.NewManager(configPath)
@@ -33,7 +35,13 @@ func main() {
 		log.Fatalf("[mockcam] Failed to load configuration: %v", err)
 	}
 	cfg := cfgMgr.Get()
-	log.Printf("[mockcam] Configuration loaded: %d profiles configured, model=%s",
+
+	// Configure initial log level
+	if cfg.Server.LogLevel != "" {
+		logger.GlobalLogger.SetMinLevel(logger.LogLevel(strings.ToUpper(cfg.Server.LogLevel)))
+	}
+
+	logger.Infof("mockcam", "Configuration loaded: %d profiles configured, model=%s",
 		len(cfg.Profiles), cfg.Server.DeviceInfo.Model)
 
 	// 2. Initialize Authentication & PTZ

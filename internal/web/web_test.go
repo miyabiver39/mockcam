@@ -74,4 +74,52 @@ func TestWebEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
+
+	// 4. /api/logs
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest("GET", "/api/logs", nil)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/logs, got %d", rec.Code)
+	}
+
+	// 5. /api/clients
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest("GET", "/api/clients", nil)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/clients, got %d", rec.Code)
+	}
+
+	// 6. /api/diagnostics/export
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest("GET", "/api/diagnostics/export", nil)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/diagnostics/export, got %d", rec.Code)
+	}
+
+	// 7. /api/ptz/presets
+	rec = httptest.NewRecorder()
+	presetBody := []byte(`{"action":"save_current","name":"Lobby_North"}`)
+	req = httptest.NewRequest("POST", "/api/ptz/presets", bytes.NewReader(presetBody))
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/ptz/presets save, got %d", rec.Code)
+	}
+
+	// 8. /api/profiles POST (Add profile)
+	rec = httptest.NewRecorder()
+	newProf := []byte(`{
+		"token": "Profile_3",
+		"name": "CustomStream",
+		"source_mode": "generate",
+		"video": {"codec": "H264", "resolution": {"width": 640, "height": 360}, "framerate": 20, "gop_size": 20, "bitrate_mode": "CBR", "bitrate_limit_kbps": 500},
+		"audio": {"enabled": false}
+	}`)
+	req = httptest.NewRequest("POST", "/api/profiles", bytes.NewReader(newProf))
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/profiles POST, got %d: %s", rec.Code, rec.Body.String())
+	}
 }

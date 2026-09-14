@@ -15,12 +15,17 @@ type VideoConfig struct {
 	BitrateMode      string     `json:"bitrate_mode"` // "CBR" or "VBR"
 	BitrateLimitKbps int        `json:"bitrate_limit_kbps"`
 	Quality          float64    `json:"quality"`
+	Pattern          string     `json:"pattern,omitempty"`           // "testsrc2", "smptebars", "allrgb", "mptestsrc"
+	OsdText          string     `json:"osd_text,omitempty"`          // Custom OSD text overlay
+	ShowClock        bool       `json:"show_clock"`                  // Whether to display clock overlay
+	EnableNoise      bool       `json:"enable_noise"`                // Adds camera sensor grain/noise
+	EnableMotionBox  bool       `json:"enable_motion_box"`           // Draws moving bounding box for VMS motion detection
 }
 
 // AudioConfig defines audio stream settings.
 type AudioConfig struct {
 	Enabled     bool   `json:"enabled"`
-	Mode        string `json:"mode"` // "time_signal", "silent", or ""
+	Mode        string `json:"mode"` // "time_signal", "silent", "noise", "chime"
 	Codec       string `json:"codec"`
 	BitrateKbps int    `json:"bitrate_kbps"`
 	SampleRate  int    `json:"sample_rate"`
@@ -53,16 +58,27 @@ type ServerConfig struct {
 	AuthType   string           `json:"auth_type"` // "basic", "digest", or "none"
 	AuthUser   string           `json:"auth_user"`
 	AuthPass   string           `json:"auth_pass"`
+	LogLevel   string           `json:"log_level,omitempty"` // "DEBUG", "INFO", "WARN", "ERROR"
 	DeviceInfo DeviceInfoConfig `json:"device_info"`
+}
+
+// PTZPreset represents a saved PTZ coordinate.
+type PTZPreset struct {
+	Name string  `json:"name"`
+	Pan  float64 `json:"pan"`
+	Tilt float64 `json:"tilt"`
+	Zoom float64 `json:"zoom"`
 }
 
 // PTZConfig defines PTZ node and initial position settings.
 type PTZConfig struct {
-	Enabled   bool    `json:"enabled"`
-	NodeToken string  `json:"node_token"`
-	Pan       float64 `json:"pan"`
-	Tilt      float64 `json:"tilt"`
-	Zoom      float64 `json:"zoom"`
+	Enabled   bool        `json:"enabled"`
+	NodeToken string      `json:"node_token"`
+	Pan       float64     `json:"pan"`
+	Tilt      float64     `json:"tilt"`
+	Zoom      float64     `json:"zoom"`
+	Speed     float64     `json:"speed,omitempty"`
+	Presets   []PTZPreset `json:"presets,omitempty"`
 }
 
 // Config represents the complete MockCam settings.

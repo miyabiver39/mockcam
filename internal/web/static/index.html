@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MockCam - Virtual Network Camera Control</title>
+  <title>MockCam - Virtual Network Camera Control & Diagnostic Suite</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
   <script>
@@ -42,12 +42,22 @@
         </div>
       </div>
 
-      <div class="flex items-center space-x-4">
-        <div class="flex items-center space-x-2 text-xs">
+      <!-- Action buttons in header -->
+      <div class="flex items-center space-x-2 sm:space-x-3">
+        <div class="hidden sm:flex items-center space-x-2 text-xs">
           <span class="w-2.5 h-2.5 rounded-full" :class="wsConnected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'"></span>
-          <span class="text-slate-300" x-text="wsConnected ? 'Live WebSocket Connected' : 'Disconnected'"></span>
+          <span class="text-slate-300" x-text="wsConnected ? 'WebSocket Live' : 'Disconnected'"></span>
         </div>
-        <button @click="refreshAll()" class="px-3 py-1.5 text-xs font-medium rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition">
+
+        <button @click="showLaunchModal = true" class="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-cyan-950 text-cyan-400 border border-cyan-800 hover:bg-cyan-900 transition flex items-center space-x-1">
+          <span>🚀 Play URLs</span>
+        </button>
+
+        <button @click="downloadDiagnostics()" class="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700 transition flex items-center space-x-1" title="Download JSON Diagnostic Bundle">
+          <span>📥 Diagnostics</span>
+        </button>
+
+        <button @click="refreshAll()" class="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition">
           Refresh
         </button>
       </div>
@@ -62,43 +72,71 @@
 
   <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
 
-    <!-- Status Cards -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-      <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
-        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Active Profiles</div>
-        <div class="mt-2 text-2xl font-bold text-white flex items-baseline justify-between">
+    <!-- Status Cards with Bitrate & Packet Metrics -->
+    <div class="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
+      <div class="p-3.5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
+        <div class="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Active Profiles</div>
+        <div class="mt-1.5 text-xl sm:text-2xl font-bold text-white flex items-baseline justify-between">
           <span x-text="status.profiles_count || 0"></span>
-          <span class="text-xs text-slate-500 font-mono">ONVIF Profile S</span>
+          <span class="text-[10px] text-slate-500 font-mono">ONVIF S</span>
         </div>
       </div>
 
-      <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
-        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">RTSP Clients</div>
-        <div class="mt-2 text-2xl font-bold text-cyan-400 flex items-baseline justify-between">
+      <div class="p-3.5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
+        <div class="text-[11px] font-medium text-slate-400 uppercase tracking-wider">RTSP Clients</div>
+        <div class="mt-1.5 text-xl sm:text-2xl font-bold text-cyan-400 flex items-baseline justify-between">
           <span x-text="status.rtsp_clients || 0"></span>
-          <span class="text-xs text-slate-500 font-mono">1:N Zero-Copy</span>
+          <span class="text-[10px] text-slate-500 font-mono">1:N Zero-Copy</span>
         </div>
       </div>
 
-      <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
-        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Server Uptime</div>
-        <div class="mt-2 text-2xl font-bold text-emerald-400">
+      <div class="p-3.5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
+        <div class="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Out Throughput</div>
+        <div class="mt-1.5 text-xl sm:text-2xl font-bold text-amber-400 flex items-baseline justify-between">
+          <span x-text="`${Math.round(status.bitrate_kbps || 0)} kbps`"></span>
+          <span class="text-[10px] text-slate-500 font-mono" x-text="`${((status.bytes_sent || 0)/1048576).toFixed(1)} MB`"></span>
+        </div>
+      </div>
+
+      <div class="p-3.5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
+        <div class="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Packets Dispatched</div>
+        <div class="mt-1.5 text-xl sm:text-2xl font-bold text-purple-400">
+          <span x-text="(status.packets_sent || 0).toLocaleString()"></span>
+        </div>
+      </div>
+
+      <div class="p-3.5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm col-span-2 lg:col-span-1">
+        <div class="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Server Uptime</div>
+        <div class="mt-1.5 text-xl sm:text-2xl font-bold text-emerald-400">
           <span x-text="formatUptime(status.uptime_seconds)"></span>
-        </div>
-      </div>
-
-      <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
-        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Ports</div>
-        <div class="mt-2 text-xs font-mono space-y-1 text-slate-300">
-          <div>RTSP: <span class="text-cyan-400 font-bold" x-text="status.rtsp_port || 8554"></span></div>
-          <div>HTTP/API: <span class="text-cyan-400 font-bold" x-text="status.http_port || 8080"></span></div>
-          <div>ONVIF Discovery: <span class="text-cyan-400 font-bold" x-text="status.onvif_port || 3702"></span></div>
         </div>
       </div>
     </div>
 
-    <!-- Main Grid: Profiles & PTZ Preview -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+    <!-- Navigation Tabs -->
+    <div class="flex border-b border-slate-800 space-x-4 text-sm font-medium">
+      <button @click="currentTab = 'profiles'" class="pb-2.5 border-b-2 transition"
+              :class="currentTab === 'profiles' ? 'border-cyan-400 text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-200'">
+        📹 Camera & Stream Profiles
+      </button>
+      <button @click="currentTab = 'logs'" class="pb-2.5 border-b-2 transition flex items-center space-x-1.5"
+              :class="currentTab === 'logs' ? 'border-cyan-400 text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-200'">
+        <span>📜 Live Console Logs</span>
+        <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-cyan-950 text-cyan-400 border border-cyan-800" x-text="logs.length"></span>
+      </button>
+      <button @click="currentTab = 'clients'" class="pb-2.5 border-b-2 transition flex items-center space-x-1.5"
+              :class="currentTab === 'clients' ? 'border-cyan-400 text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-200'">
+        <span>👥 Active RTSP Clients</span>
+        <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-slate-300" x-text="clients.length"></span>
+      </button>
+      <button @click="currentTab = 'system'" class="pb-2.5 border-b-2 transition"
+              :class="currentTab === 'system' ? 'border-cyan-400 text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-200'">
+        ⚙️ System & Backup
+      </button>
+    </div>
+
+    <!-- TAB 1: PROFILES & PTZ PREVIEW -->
+    <div x-show="currentTab === 'profiles'" class="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
       <!-- Left Column: Profiles CRUD (7 cols) -->
       <div class="lg:col-span-7 space-y-4">
@@ -143,6 +181,9 @@
             <span>Video & Audio Profiles</span>
             <span class="text-xs font-normal text-slate-400">(Hot-Reload with SIGTERM/Kill)</span>
           </h2>
+          <button @click="addNewProfile()" class="px-3 py-1 text-xs font-semibold rounded bg-emerald-800 hover:bg-emerald-700 text-white transition flex items-center space-x-1">
+            <span>+ Add Profile</span>
+          </button>
         </div>
 
         <div class="space-y-4">
@@ -154,8 +195,13 @@
                   <span class="px-2 py-1 text-xs font-mono font-semibold rounded bg-cyan-950 text-cyan-400 border border-cyan-800" x-text="profile.token"></span>
                   <input type="text" x-model="profile.name" class="bg-slate-950 border border-slate-700 rounded px-2.5 py-1 text-sm font-medium text-white focus:outline-none focus:border-cyan-500">
                 </div>
-                <div class="text-xs font-mono text-slate-400">
-                  rtsp://127.0.0.1:<span x-text="status.rtsp_port || 8554"></span>/live/<span x-text="profile.token"></span>
+                <div class="flex items-center space-x-2">
+                  <button @click="copyStreamUrl(profile.token)" class="text-xs text-cyan-400 hover:underline font-mono">
+                    Copy URL
+                  </button>
+                  <button x-show="config.profiles.length > 1" @click="deleteProfile(profile.token)" class="text-xs text-rose-400 hover:text-rose-300 ml-2" title="Delete Profile">
+                    ✕ Delete
+                  </button>
                 </div>
               </div>
 
@@ -202,13 +248,42 @@
                 </div>
 
                 <div>
+                  <label class="block text-slate-400 mb-1">Pattern Generator</label>
+                  <select x-model="profile.video.pattern" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white">
+                    <option value="testsrc2">Color Bar + Move (testsrc2)</option>
+                    <option value="smptebars">SMPTE Color Bars</option>
+                    <option value="allrgb">RGB Spectrum (allrgb)</option>
+                    <option value="mptestsrc">Motion Picture (mptestsrc)</option>
+                  </select>
+                </div>
+
+                <div>
                   <label class="block text-slate-400 mb-1">Audio Mode</label>
                   <select x-model="profile.audio.mode" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white">
-                    <option value="time_signal">時報 (Beep Signal)</option>
+                    <option value="time_signal">時報 (Beep Signal 880Hz)</option>
+                    <option value="noise">White Noise</option>
+                    <option value="chime">Chime Bell Tone</option>
                     <option value="silent">無音 (Silent)</option>
                     <option value="">OFF (Disabled)</option>
                   </select>
                 </div>
+
+                <div class="sm:col-span-2">
+                  <label class="block text-slate-400 mb-1">Custom OSD Text Overlay</label>
+                  <input type="text" x-model="profile.video.osd_text" placeholder="e.g. [Camera 01 - Gate]" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white">
+                </div>
+              </div>
+
+              <!-- Extra Toggles: Noise & Motion Detection Box -->
+              <div class="flex items-center space-x-6 text-xs text-slate-300 pt-1">
+                <label class="flex items-center space-x-2 cursor-pointer">
+                  <input type="checkbox" x-model="profile.video.enable_noise" class="rounded accent-cyan-500">
+                  <span>Simulate Sensor Noise</span>
+                </label>
+                <label class="flex items-center space-x-2 cursor-pointer">
+                  <input type="checkbox" x-model="profile.video.enable_motion_box" class="rounded accent-cyan-500">
+                  <span>Moving Target Box (VMS Motion Test)</span>
+                </label>
               </div>
 
               <!-- Action button -->
@@ -251,7 +326,6 @@
             </svg>
 
             <!-- Dynamic Camera Pointer Position -->
-            <!-- pan: -1..1 -> cx: 20..180, tilt: -1..1 -> cy: 180..20 (inverted) -->
             <svg class="absolute inset-0 w-full h-full pointer-events-none transition-all duration-150" viewBox="0 0 200 200">
               <g :transform="`translate(${100 + ptz.pan * 75}, ${100 - ptz.tilt * 75}) scale(${1 + ptz.zoom * 0.8})`">
                 <circle cx="0" cy="0" r="8" fill="#06b6d4" fill-opacity="0.4" stroke="#22d3ee" stroke-width="2" />
@@ -271,7 +345,7 @@
             <button @click="nudgePTZ(0, 0.2)" class="w-10 h-10 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold border border-slate-700">▲</button>
             <div class="flex items-center space-x-1.5">
               <button @click="nudgePTZ(-0.2, 0)" class="w-10 h-10 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold border border-slate-700">◀</button>
-              <button @click="resetPTZ()" class="w-10 h-10 rounded bg-cyan-900 hover:bg-cyan-800 text-cyan-200 text-xs font-bold border border-cyan-700">●</button>
+              <button @click="resetPTZ()" class="w-10 h-10 rounded bg-cyan-900 hover:bg-cyan-800 text-cyan-200 text-xs font-bold border border-cyan-700" title="Home Position">●</button>
               <button @click="nudgePTZ(0.2, 0)" class="w-10 h-10 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold border border-slate-700">▶</button>
             </div>
             <button @click="nudgePTZ(0, -0.2)" class="w-10 h-10 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold border border-slate-700">▼</button>
@@ -285,13 +359,38 @@
             </div>
             <input type="range" min="0" max="1" step="0.05" x-model.number="ptz.zoom" @input="updatePTZPosition()" class="w-full accent-cyan-500">
           </div>
+
+          <!-- PTZ Presets Manager -->
+          <div class="w-full pt-3 border-t border-slate-800 space-y-2">
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-slate-400 font-medium">Saved Presets</span>
+              <button @click="saveCurrentPreset()" class="text-cyan-400 hover:underline font-semibold">+ Save Current</button>
+            </div>
+            <div class="flex flex-wrap gap-1.5">
+              <template x-for="preset in ptzPresets" :key="preset.name">
+                <div class="flex items-center rounded bg-slate-800 border border-slate-700 text-xs text-slate-200 pl-2 pr-1 py-0.5 space-x-1">
+                  <span @click="gotoPreset(preset.name)" class="cursor-pointer hover:text-cyan-400" x-text="preset.name"></span>
+                  <button @click="deletePreset(preset.name)" class="text-slate-500 hover:text-rose-400 font-bold ml-1">×</button>
+                </div>
+              </template>
+              <div x-show="ptzPresets.length === 0" class="text-xs text-slate-600 italic">No saved presets</div>
+            </div>
+          </div>
         </div>
 
-        <!-- Live Snapshot Card -->
+        <!-- Live Snapshot Card with Refresh Rate Selector -->
         <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm space-y-3">
-          <div class="flex items-center justify-between">
-            <span class="text-xs font-medium text-slate-400">Snapshot Stream</span>
-            <button @click="refreshSnapshot()" class="text-xs text-cyan-400 hover:underline">Reload Frame</button>
+          <div class="flex items-center justify-between text-xs">
+            <span class="font-medium text-slate-400">Live Snapshot</span>
+            <div class="flex items-center space-x-2">
+              <select x-model.number="snapshotInterval" @change="updateSnapshotTimer()" class="bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-slate-300">
+                <option :value="1000">1s interval</option>
+                <option :value="3000">3s interval</option>
+                <option :value="5000">5s interval</option>
+                <option :value="0">Paused</option>
+              </select>
+              <button @click="refreshSnapshot()" class="text-cyan-400 hover:underline">Reload</button>
+            </div>
           </div>
           <div class="aspect-video bg-black rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center relative">
             <img :src="snapshotUrl" alt="Live Snapshot" class="w-full h-full object-cover">
@@ -299,14 +398,180 @@
         </div>
 
       </div>
+    </div>
 
+    <!-- TAB 2: LIVE CONSOLE LOGS -->
+    <div x-show="currentTab === 'logs'" class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+        <div class="flex items-center space-x-3">
+          <h2 class="text-base font-semibold text-white">Live System & FFmpeg Diagnostics Log</h2>
+          <span class="text-xs px-2 py-0.5 rounded font-mono bg-slate-800 text-slate-400" x-text="`${logs.length} entries`"></span>
+        </div>
+        <div class="flex items-center space-x-2 text-xs">
+          <!-- Log Level Selector -->
+          <label class="text-slate-400">Min Level:</label>
+          <select x-model="minLogLevel" @change="changeLogLevel()" class="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white">
+            <option value="DEBUG">DEBUG</option>
+            <option value="INFO">INFO</option>
+            <option value="WARN">WARN</option>
+            <option value="ERROR">ERROR</option>
+          </select>
+
+          <button @click="isLogPaused = !isLogPaused" class="px-2.5 py-1 rounded border text-xs font-semibold"
+                  :class="isLogPaused ? 'bg-amber-950 text-amber-300 border-amber-800' : 'bg-slate-800 text-slate-300 border-slate-700'">
+            <span x-text="isLogPaused ? '▶ Resume' : '⏸ Pause'"></span>
+          </button>
+          <button @click="logs = []" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">
+            Clear
+          </button>
+        </div>
+      </div>
+
+      <!-- Log Output Box -->
+      <div class="bg-slate-950 rounded-lg p-3 font-mono text-xs text-slate-300 h-96 overflow-y-auto space-y-1 border border-slate-800" id="logBox">
+        <template x-for="(entry, index) in filteredLogs" :key="index">
+          <div class="flex items-start space-x-2 hover:bg-slate-900/50 py-0.5 px-1 rounded">
+            <span class="text-slate-500 shrink-0" x-text="entry.timestamp"></span>
+            <span class="px-1.5 py-0.2 rounded text-[10px] font-bold shrink-0"
+                  :class="{
+                    'bg-cyan-950 text-cyan-400 border border-cyan-800': entry.level === 'INFO',
+                    'bg-slate-800 text-slate-400': entry.level === 'DEBUG',
+                    'bg-amber-950 text-amber-400 border border-amber-800': entry.level === 'WARN',
+                    'bg-rose-950 text-rose-300 border border-rose-800': entry.level === 'ERROR'
+                  }"
+                  x-text="entry.level"></span>
+            <span class="text-cyan-600 font-semibold shrink-0" x-text="`[${entry.source}]`"></span>
+            <span class="break-all text-slate-200" x-text="entry.message"></span>
+          </div>
+        </template>
+        <div x-show="filteredLogs.length === 0" class="text-center text-slate-600 py-10">No log entries matching filter</div>
+      </div>
+    </div>
+
+    <!-- TAB 3: ACTIVE RTSP CLIENTS -->
+    <div x-show="currentTab === 'clients'" class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h2 class="text-base font-semibold text-white">Active RTSP Consumers & Connections</h2>
+        <button @click="fetchClients()" class="text-xs text-cyan-400 hover:underline">Refresh List</button>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs">
+          <thead class="text-slate-400 uppercase bg-slate-950/60 border-b border-slate-800">
+            <tr>
+              <th class="px-4 py-2.5">Session ID</th>
+              <th class="px-4 py-2.5">Stream Path</th>
+              <th class="px-4 py-2.5">Transport</th>
+              <th class="px-4 py-2.5">Connected For</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800 font-mono">
+            <template x-for="c in clients" :key="c.id">
+              <tr class="hover:bg-slate-800/40">
+                <td class="px-4 py-2.5 text-cyan-400 font-bold" x-text="c.id"></td>
+                <td class="px-4 py-2.5 text-white" x-text="`/live/${c.path}`"></td>
+                <td class="px-4 py-2.5 text-slate-400" x-text="c.transport"></td>
+                <td class="px-4 py-2.5 text-emerald-400" x-text="`${c.duration_seconds}s`"></td>
+              </tr>
+            </template>
+            <tr x-show="clients.length === 0">
+              <td colspan="4" class="px-4 py-8 text-center text-slate-500 font-sans">
+                No active RTSP clients connected at this moment.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- TAB 4: SYSTEM & BACKUP -->
+    <div x-show="currentTab === 'system'" class="p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-sm space-y-6">
+      <div>
+        <h2 class="text-base font-semibold text-white">System Configuration & Factory Reset</h2>
+        <p class="text-xs text-slate-400 mt-0.5">Export current settings, import JSON backups, or reset back to initial defaults.</p>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <!-- Export Settings -->
+        <div class="p-4 rounded-lg bg-slate-950 border border-slate-800 space-y-2">
+          <div class="font-semibold text-sm text-white">Export Configuration</div>
+          <p class="text-xs text-slate-400">Download current camera settings as a JSON file.</p>
+          <button @click="exportConfigFile()" class="px-3 py-1.5 rounded bg-cyan-700 hover:bg-cyan-600 text-xs font-semibold text-white transition">
+            Export settings.json
+          </button>
+        </div>
+
+        <!-- Factory Reset -->
+        <div class="p-4 rounded-lg bg-slate-950 border border-rose-900/40 space-y-2">
+          <div class="font-semibold text-sm text-rose-400">Factory Reset</div>
+          <p class="text-xs text-slate-400">Restore factory profiles and initial configurations.</p>
+          <button @click="factoryReset()" class="px-3 py-1.5 rounded bg-rose-900 hover:bg-rose-800 text-xs font-semibold text-white transition">
+            Reset to Factory Defaults
+          </button>
+        </div>
+
+        <!-- Diagnostic Report -->
+        <div class="p-4 rounded-lg bg-slate-950 border border-slate-800 space-y-2">
+          <div class="font-semibold text-sm text-white">Full Diagnostic Bundle</div>
+          <p class="text-xs text-slate-400">Export streaming metrics, system state, and recent logs for troubleshooting.</p>
+          <button @click="downloadDiagnostics()" class="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700 transition">
+            Download Bundle (.json)
+          </button>
+        </div>
+      </div>
     </div>
 
   </main>
 
+  <!-- Quick Play Launch Modal -->
+  <div x-show="showLaunchModal" x-transition class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-xl max-w-xl w-full p-5 space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-bold text-white">Ready-to-Play Streaming URLs</h3>
+        <button @click="showLaunchModal = false" class="text-slate-400 hover:text-white font-bold">✕</button>
+      </div>
+
+      <div class="space-y-3 text-xs">
+        <p class="text-slate-400">Copy these commands to launch VLC, FFplay, or test playback directly in your terminal:</p>
+
+        <template x-for="p in config.profiles" :key="p.token">
+          <div class="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-2">
+            <div class="font-semibold text-cyan-400 flex items-center justify-between">
+              <span x-text="`${p.name} (${p.token})`"></span>
+              <span class="text-slate-500 font-mono text-[10px]" x-text="`${p.video.resolution.width}x${p.video.resolution.height} @ ${p.video.framerate}fps`"></span>
+            </div>
+
+            <div class="space-y-1">
+              <div class="text-slate-500">VLC Command:</div>
+              <div class="flex items-center justify-between bg-slate-900 px-2 py-1 rounded font-mono text-[11px] text-slate-300">
+                <span class="truncate" x-text="`vlc ${buildRtspUrl(p.token)}`"></span>
+                <button @click="copyToClipboard(`vlc ${buildRtspUrl(p.token)}`)" class="text-cyan-400 ml-2 hover:underline shrink-0">Copy</button>
+              </div>
+            </div>
+
+            <div class="space-y-1">
+              <div class="text-slate-500">FFplay Command (TCP Zero Latency):</div>
+              <div class="flex items-center justify-between bg-slate-900 px-2 py-1 rounded font-mono text-[11px] text-slate-300">
+                <span class="truncate" x-text="`ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay ${buildRtspUrl(p.token)}`"></span>
+                <button @click="copyToClipboard(`ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay ${buildRtspUrl(p.token)}`)" class="text-cyan-400 ml-2 hover:underline shrink-0">Copy</button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <div class="flex justify-end pt-2 border-t border-slate-800">
+        <button @click="showLaunchModal = false" class="px-4 py-1.5 text-xs font-semibold rounded bg-slate-800 text-slate-300 hover:bg-slate-700">
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script>
     function mockCamApp() {
       return {
+        currentTab: 'profiles',
         status: {},
         config: {
           server: {
@@ -322,17 +587,29 @@
           ptz: { pan: 0, tilt: 0, zoom: 0 }
         },
         ptz: { pan: 0, tilt: 0, zoom: 0, is_moving: false },
+        ptzPresets: [],
         saving: { Profile_1: false, Profile_2: false },
+        clients: [],
+        logs: [],
+        minLogLevel: 'INFO',
+        isLogPaused: false,
         wsConnected: false,
         ws: null,
         snapshotUrl: '/api/snapshot/Profile_1?t=' + Date.now(),
+        snapshotInterval: 3000,
+        snapshotTimer: null,
+        showLaunchModal: false,
         toast: { show: false, message: '', type: 'success' },
 
         init() {
           this.refreshAll();
           this.connectWebSocket();
-          setInterval(() => this.refreshSnapshot(), 3000);
-          setInterval(() => this.fetchStatus(), 5000);
+          this.fetchLogs();
+          this.fetchClients();
+          this.fetchPresets();
+          this.updateSnapshotTimer();
+          setInterval(() => this.fetchStatus(), 3000);
+          setInterval(() => this.fetchClients(), 5000);
         },
 
         showToast(message, type = 'success') {
@@ -343,6 +620,7 @@
         async refreshAll() {
           await this.fetchStatus();
           await this.fetchConfig();
+          await this.fetchPresets();
           this.refreshSnapshot();
         },
 
@@ -364,6 +642,52 @@
           }
         },
 
+        async fetchClients() {
+          try {
+            const res = await fetch('/api/clients');
+            if (res.ok) this.clients = await res.json();
+          } catch (e) {
+            console.error(e);
+          }
+        },
+
+        async fetchLogs() {
+          try {
+            const res = await fetch('/api/logs');
+            if (res.ok) this.logs = await res.json();
+          } catch (e) {
+            console.error(e);
+          }
+        },
+
+        async fetchPresets() {
+          try {
+            const res = await fetch('/api/ptz/presets');
+            if (res.ok) this.ptzPresets = await res.json() || [];
+          } catch (e) {
+            console.error(e);
+          }
+        },
+
+        get filteredLogs() {
+          const levels = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
+          const minIdx = levels.indexOf(this.minLogLevel);
+          return this.logs.filter(l => levels.indexOf(l.level) >= minIdx);
+        },
+
+        async changeLogLevel() {
+          try {
+            await fetch('/api/logs', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ level: this.minLogLevel }),
+            });
+            this.showToast(`Log level changed to ${this.minLogLevel}`);
+          } catch (e) {
+            this.showToast(e.message, 'error');
+          }
+        },
+
         async saveProfile(token, profile) {
           this.saving = { ...this.saving, [token]: true };
           try {
@@ -373,7 +697,7 @@
               body: JSON.stringify(profile),
             });
             if (res.ok) {
-              this.showToast(`Profile '${token}' updated and restarted!`);
+              this.showToast(`Profile '${token}' updated and hot-reloaded!`);
               await this.fetchConfig();
             } else {
               this.showToast(`Failed to update profile: ${await res.text()}`, 'error');
@@ -382,6 +706,65 @@
             this.showToast(e.message, 'error');
           } finally {
             this.saving = { ...this.saving, [token]: false };
+          }
+        },
+
+        async addNewProfile() {
+          const num = (this.config.profiles?.length || 0) + 1;
+          const newProfile = {
+            token: `Profile_${num}`,
+            name: `Stream_${num}_720p`,
+            source_mode: "generate",
+            source_path: "",
+            video: {
+              codec: "H264",
+              resolution: { width: 1280, height: 720 },
+              framerate: 25,
+              gop_size: 25,
+              bitrate_mode: "CBR",
+              bitrate_limit_kbps: 2000,
+              quality: 4.0,
+              pattern: "testsrc2",
+              show_clock: true
+            },
+            audio: {
+              enabled: true,
+              mode: "time_signal",
+              codec: "AAC",
+              bitrate_kbps: 128,
+              sample_rate: 44100
+            }
+          };
+
+          try {
+            const res = await fetch('/api/profiles', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(newProfile),
+            });
+            if (res.ok) {
+              this.showToast(`Created new profile '${newProfile.token}'`);
+              await this.fetchConfig();
+            } else {
+              this.showToast(`Failed: ${await res.text()}`, 'error');
+            }
+          } catch (e) {
+            this.showToast(e.message, 'error');
+          }
+        },
+
+        async deleteProfile(token) {
+          if (!confirm(`Delete profile '${token}'?`)) return;
+          try {
+            const res = await fetch(`/api/profiles/${token}`, { method: 'DELETE' });
+            if (res.ok) {
+              this.showToast(`Deleted profile '${token}'`);
+              await this.fetchConfig();
+            } else {
+              this.showToast(`Failed: ${await res.text()}`, 'error');
+            }
+          } catch (e) {
+            this.showToast(e.message, 'error');
           }
         },
 
@@ -404,6 +787,75 @@
           }
         },
 
+        async saveCurrentPreset() {
+          const name = prompt('Enter preset name:', `Preset_${this.ptzPresets.length + 1}`);
+          if (!name) return;
+          try {
+            const res = await fetch('/api/ptz/presets', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'save_current', name }),
+            });
+            if (res.ok) {
+              this.showToast(`Saved preset '${name}'`);
+              await this.fetchPresets();
+            }
+          } catch (e) {
+            this.showToast(e.message, 'error');
+          }
+        },
+
+        async gotoPreset(name) {
+          try {
+            const res = await fetch('/api/ptz/presets', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'goto', name }),
+            });
+            if (res.ok) this.showToast(`Moving to '${name}'`);
+          } catch (e) {
+            this.showToast(e.message, 'error');
+          }
+        },
+
+        async deletePreset(name) {
+          try {
+            await fetch('/api/ptz/presets', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'delete', name }),
+            });
+            await this.fetchPresets();
+          } catch (e) {
+            console.error(e);
+          }
+        },
+
+        async factoryReset() {
+          if (!confirm('Are you sure you want to reset all configurations to factory defaults?')) return;
+          try {
+            const res = await fetch('/api/config/reset', { method: 'POST' });
+            if (res.ok) {
+              this.showToast('Factory reset complete!');
+              await this.refreshAll();
+            }
+          } catch (e) {
+            this.showToast(e.message, 'error');
+          }
+        },
+
+        exportConfigFile() {
+          const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(this.config, null, 2));
+          const dlAnchorElem = document.createElement('a');
+          dlAnchorElem.setAttribute("href", dataStr);
+          dlAnchorElem.setAttribute("download", "settings.json");
+          dlAnchorElem.click();
+        },
+
+        downloadDiagnostics() {
+          window.location.href = '/api/diagnostics/export';
+        },
+
         connectWebSocket() {
           const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
           const wsUrl = `${protocol}//${window.location.host}/ws`;
@@ -421,6 +873,13 @@
                 this.ptz.tilt = data.tilt;
                 this.ptz.zoom = data.zoom;
                 this.ptz.is_moving = data.is_moving;
+              } else if (data.type === 'log') {
+                if (!this.isLogPaused) {
+                  this.logs.push(data.entry);
+                  if (this.logs.length > 500) this.logs.shift();
+                  const box = document.getElementById('logBox');
+                  if (box) box.scrollTop = box.scrollHeight;
+                }
               }
             } catch (e) {
               console.error(e);
@@ -459,9 +918,35 @@
           });
         },
 
+        updateSnapshotTimer() {
+          if (this.snapshotTimer) clearInterval(this.snapshotTimer);
+          if (this.snapshotInterval > 0) {
+            this.snapshotTimer = setInterval(() => this.refreshSnapshot(), this.snapshotInterval);
+          }
+        },
+
         refreshSnapshot() {
           const token = (this.config.profiles && this.config.profiles.length > 0) ? this.config.profiles[0].token : 'Profile_1';
           this.snapshotUrl = `/api/snapshot/${token}?t=${Date.now()}`;
+        },
+
+        buildRtspUrl(token) {
+          const host = window.location.hostname || '127.0.0.1';
+          const port = this.status.rtsp_port || 8554;
+          if (this.config.server.auth_type !== 'none' && this.config.server.auth_user) {
+            return `rtsp://${this.config.server.auth_user}:${this.config.server.auth_pass}@${host}:${port}/live/${token}`;
+          }
+          return `rtsp://${host}:${port}/live/${token}`;
+        },
+
+        copyStreamUrl(token) {
+          this.copyToClipboard(this.buildRtspUrl(token));
+        },
+
+        copyToClipboard(text) {
+          navigator.clipboard.writeText(text).then(() => {
+            this.showToast('Copied to clipboard!');
+          });
         },
 
         formatUptime(sec) {

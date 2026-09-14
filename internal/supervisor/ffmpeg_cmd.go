@@ -13,8 +13,8 @@ import (
 func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int) []string {
 	var args []string
 
-	// Global options: hide banner, loglevel warning
-	args = append(args, "-hide_banner", "-loglevel", "warning")
+	// Global options: hide banner, loglevel warning, force timestamp generation & zero input latency
+	args = append(args, "-hide_banner", "-loglevel", "warning", "-fflags", "+genpts+nobuffer")
 
 	// 1. Video Input
 	useFile := false
@@ -29,7 +29,6 @@ func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int) []string {
 	if useFile {
 		args = append(args, "-re", "-stream_loop", "-1", "-i", profile.SourcePath)
 	} else {
-		// generate mode using testsrc2 + drawtext
 		fps := profile.Video.Framerate
 		if fps <= 0 {
 			fps = 30
@@ -41,11 +40,53 @@ func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int) []string {
 			height = 1080
 		}
 
-		filter := fmt.Sprintf(
-			"testsrc2=size=%dx%d:rate=%d,drawtext=text='%%{pts\\:hms}':x=(w-tw)/2:y=h-th-20:fontsize=32:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=5",
-			width, height, fps,
-		)
-		args = append(args, "-re", "-f", "lavfi", "-i", filter)
+		// Select generator pattern
+		pattern := strings.ToLower(strings.TrimSpace(profile.Video.Pattern))
+		if pattern == "" {
+			pattern = "testsrc2"
+		}
+		var baseFilter string
+		switch pattern {
+		case "smptebars":
+			baseFilter = fmt.Sprintf("smptebars=size=%dx%d:rate=%d", width, height, fps)
+		case "allrgb":
+			baseFilter = fmt.Sprintf("allrgb=size=%dx%d:rate=%d", width, height, fps)
+		case "mptestsrc":
+			baseFilter = fmt.Sprintf("mptestsrc=rate=%d:max_rate=%d,scale=%d:%d", fps, fps, width, height)
+		default: // testsrc2
+			baseFilter = fmt.Sprintf("testsrc2=size=%dx%d:rate=%d", width, height, fps)
+		}
+
+		filterParts := []string{baseFilter}
+
+		// Noise/grain injection
+		if profile.Video.EnableNoise {
+			filterParts = append(filterParts, "noise=alls=12:allf=t")
+		}
+
+		// Moving motion bounding box for VMS motion detection testing
+		if profile.Video.EnableMotionBox {
+			// Box bounces horizontally across the frame
+			filterParts = append(filterParts, fmt.Sprintf("drawbox=x='(w-160)*(0.5+0.5*sin(t*1.5))':y=60:w=160:h=120:color=red@0.8:t=4"))
+		}
+
+		// Real-time clock overlay
+		if profile.Video.ShowClock || profile.Video.OsdText == "" {
+			filterParts = append(filterParts, "drawtext=text='%{pts\\:hms}':x=(w-tw)/2:y=h-th-20:fontsize=32:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=5")
+		}
+
+		// Custom OSD text overlay
+		if profile.Video.OsdText != "" {
+			escapedText := strings.ReplaceAll(profile.Video.OsdText, ":", "\\:")
+			escapedText = strings.ReplaceAll(escapedText, "'", "\\'")
+			filterParts = append(filterParts, fmt.Sprintf("drawtext=text='%s':x=20:y=20:fontsize=28:fontcolor=cyan:box=1:boxcolor=black@0.6:boxborderw=4", escapedText))
+		}
+
+		// Timestamp normalization filter to avoid discontinuous PTS
+		filterParts = append(filterParts, "setpts=PTS-STARTPTS")
+
+		combinedFilter := strings.Join(filterParts, ",")
+		args = append(args, "-re", "-f", "lavfi", "-i", combinedFilter)
 	}
 
 	// 2. Audio Input (if enabled)
@@ -54,12 +95,18 @@ func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int) []string {
 		if sampleRate <= 0 {
 			sampleRate = 44100
 		}
-		if profile.Audio.Mode == "time_signal" {
-			args = append(args, "-re", "-f", "lavfi", "-i", fmt.Sprintf("sine=frequency=880:beep_factor=4:r=%d", sampleRate))
-		} else {
-			// silent or default
-			args = append(args, "-re", "-f", "lavfi", "-i", fmt.Sprintf("anullsrc=channel_layout=stereo:sample_rate=%d", sampleRate))
+		var audioFilter string
+		switch strings.ToLower(profile.Audio.Mode) {
+		case "time_signal":
+			audioFilter = fmt.Sprintf("sine=frequency=880:beep_factor=4:r=%d,asetpts=PTS-STARTPTS", sampleRate)
+		case "noise":
+			audioFilter = fmt.Sprintf("anoisesrc=sample_rate=%d:amplitude=0.05,asetpts=PTS-STARTPTS", sampleRate)
+		case "chime":
+			audioFilter = fmt.Sprintf("sine=frequency=1046.5:beep_factor=2:r=%d,asetpts=PTS-STARTPTS", sampleRate)
+		default:
+			audioFilter = fmt.Sprintf("anullsrc=channel_layout=stereo:sample_rate=%d,asetpts=PTS-STARTPTS", sampleRate)
 		}
+		args = append(args, "-re", "-f", "lavfi", "-i", audioFilter)
 	}
 
 	// 3. Video Encoding & GOP
@@ -90,11 +137,11 @@ func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int) []string {
 		)
 	}
 
-	// Video Codec
+	// Video Codec & Flags for zero-latency streaming
 	if strings.EqualFold(profile.Video.Codec, "H265") || strings.EqualFold(profile.Video.Codec, "HEVC") {
 		args = append(args, "-c:v", "libx265", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p")
 	} else {
-		args = append(args, "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p")
+		args = append(args, "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-x264opts", "no-scenecut")
 	}
 
 	// 4. Audio Encoding
@@ -112,9 +159,14 @@ func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int) []string {
 		args = append(args, "-an")
 	}
 
-	// 5. Output format & URL
+	// 5. Output format & URL with TCP interleaved buffer optimization
 	destURL := fmt.Sprintf("rtsp://127.0.0.1:%d/live/%s", rtspPort, profile.Token)
-	args = append(args, "-rtsp_transport", "tcp", "-f", "rtsp", destURL)
+	args = append(args,
+		"-rtsp_transport", "tcp",
+		"-buffer_size", "1024000",
+		"-max_delay", "500000",
+		"-f", "rtsp", destURL,
+	)
 
 	return args
 }

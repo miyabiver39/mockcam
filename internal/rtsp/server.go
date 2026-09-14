@@ -17,8 +17,35 @@ import (
 	"github.com/pion/rtp"
 
 	"mockcam/internal/auth"
+	"time"
+
 	"mockcam/internal/config"
+	"mockcam/internal/logger"
 )
+
+// ClientInfo represents an active RTSP consumer.
+type ClientInfo struct {
+	ID        string `json:"id"`
+	RemoteIP  string `json:"remote_ip"`
+	Path      string `json:"path"`
+	Transport string `json:"transport"`
+	Duration  int64  `json:"duration_seconds"`
+}
+
+// StreamStats tracks packet and bandwidth statistics per profile.
+type StreamStats struct {
+	PacketsSent   int64   `json:"packets_sent"`
+	BytesSent     int64   `json:"bytes_sent"`
+	BitrateKbps   float64 `json:"bitrate_kbps"`
+	ActiveReaders int     `json:"active_readers"`
+}
+
+type clientSessionRecord struct {
+	id        string
+	remoteIP  string
+	path      string
+	startTime time.Time
+}
 
 // Server handles RTSP streaming and fanout.
 type Server struct {
@@ -29,6 +56,12 @@ type Server struct {
 	mu           sync.RWMutex
 	clientCount  atomic.Int64
 	sessionPaths map[*gortsplib.ServerSession]string
+	sessions     map[*gortsplib.ServerSession]*clientSessionRecord
+	packetsSent  atomic.Int64
+	bytesSent    atomic.Int64
+	lastBytes    int64
+	lastStatTime time.Time
+	currentKbps  atomic.Int64
 }
 
 // NewServer creates a new RTSP server.
@@ -38,6 +71,8 @@ func NewServer(cfgMgr *config.Manager, authenticator *auth.Authenticator) *Serve
 		auth:         authenticator,
 		streams:      make(map[string]*gortsplib.ServerStream),
 		sessionPaths: make(map[*gortsplib.ServerSession]string),
+		sessions:     make(map[*gortsplib.ServerSession]*clientSessionRecord),
+		lastStatTime: time.Now(),
 	}
 	return s
 }
@@ -165,12 +200,19 @@ func (s *Server) OnSessionOpen(ctx *gortsplib.ServerHandlerOnSessionOpenCtx) {}
 func (s *Server) OnSessionClose(ctx *gortsplib.ServerHandlerOnSessionCloseCtx) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if rec, ok := s.sessions[ctx.Session]; ok {
+		logger.Infof("rtsp", "Client disconnected: %s from %s (viewed %s for %ds)",
+			rec.id, rec.remoteIP, rec.path, int64(time.Since(rec.startTime).Seconds()))
+		delete(s.sessions, ctx.Session)
+	}
 	delete(s.sessionPaths, ctx.Session)
 }
 
 // OnDescribe is called when receiving a DESCRIBE request.
 func (s *Server) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
-	if resp := s.checkAuth(ctx.Request, false, ctx.Conn.NetConn().RemoteAddr().String()); resp != nil {
+	remoteAddr := ctx.Conn.NetConn().RemoteAddr().String()
+	if resp := s.checkAuth(ctx.Request, false, remoteAddr); resp != nil {
+		logger.Warnf("rtsp", "Unauthorized DESCRIBE from %s for path '%s'", remoteAddr, ctx.Path)
 		return resp, nil, nil
 	}
 
@@ -203,7 +245,7 @@ func (s *Server) OnAnnounce(ctx *gortsplib.ServerHandlerOnAnnounceCtx) (*base.Re
 	s.sessionPaths[ctx.Session] = token
 	s.mu.Unlock()
 
-	log.Printf("[rtsp] Stream announced: token='%s'", token)
+	logger.Infof("rtsp", "Stream announced: token='%s'", token)
 	return &base.Response{StatusCode: base.StatusOK}, nil
 }
 
@@ -229,6 +271,21 @@ func (s *Server) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*base.Response
 
 // OnPlay is called when a reader starts playing.
 func (s *Server) OnPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
+	remoteAddr := ctx.Path
+	if ctx.Session != nil {
+		s.mu.Lock()
+		token := normalizePath(ctx.Path)
+		rec := &clientSessionRecord{
+			id:        fmt.Sprintf("sess-%d", time.Now().UnixNano()%100000),
+			remoteIP:  ctx.Path,
+			path:      token,
+			startTime: time.Now(),
+		}
+		s.sessions[ctx.Session] = rec
+		s.mu.Unlock()
+		logger.Infof("rtsp", "Client started PLAY: stream='%s' (Active readers: %d)", token, len(s.sessions))
+	}
+	_ = remoteAddr
 	return &base.Response{StatusCode: base.StatusOK}, nil
 }
 
@@ -244,6 +301,9 @@ func (s *Server) OnRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.Respon
 	}
 
 	ctx.Session.OnPacketRTPAny(func(medi *description.Media, forma format.Format, pkt *rtp.Packet) {
+		s.packetsSent.Add(1)
+		payloadLen := int64(len(pkt.Payload))
+		s.bytesSent.Add(payloadLen)
 		_ = stream.WritePacketRTP(medi, pkt)
 	})
 
@@ -251,6 +311,62 @@ func (s *Server) OnRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.Respon
 		_ = stream.WritePacketRTCP(medi, pkt)
 	})
 
-	log.Printf("[rtsp] Publishing started for token='%s'", token)
+	logger.Infof("rtsp", "Publishing started for token='%s'", token)
 	return &base.Response{StatusCode: base.StatusOK}, nil
+}
+
+// CloseStream closes a specific stream.
+func (s *Server) CloseStream(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st, ok := s.streams[token]; ok {
+		st.Close()
+		delete(s.streams, token)
+		logger.Infof("rtsp", "Stream closed: token='%s'", token)
+	}
+}
+
+// GetClients returns list of connected RTSP client sessions.
+func (s *Server) GetClients() []ClientInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	now := time.Now()
+	clients := make([]ClientInfo, 0, len(s.sessions))
+	for _, rec := range s.sessions {
+		clients = append(clients, ClientInfo{
+			ID:        rec.id,
+			RemoteIP:  rec.remoteIP,
+			Path:      rec.path,
+			Transport: "TCP/RTP",
+			Duration:  int64(now.Sub(rec.startTime).Seconds()),
+		})
+	}
+	return clients
+}
+
+// GetStats returns current streaming metrics.
+func (s *Server) GetStats() StreamStats {
+	now := time.Now()
+	totalBytes := s.bytesSent.Load()
+	packets := s.packetsSent.Load()
+
+	s.mu.Lock()
+	sec := now.Sub(s.lastStatTime).Seconds()
+	if sec >= 1.0 {
+		diffBytes := totalBytes - s.lastBytes
+		kbps := int64((float64(diffBytes*8) / sec) / 1000.0)
+		s.currentKbps.Store(kbps)
+		s.lastBytes = totalBytes
+		s.lastStatTime = now
+	}
+	readers := len(s.sessions)
+	s.mu.Unlock()
+
+	return StreamStats{
+		PacketsSent:   packets,
+		BytesSent:     totalBytes,
+		BitrateKbps:   float64(s.currentKbps.Load()),
+		ActiveReaders: readers,
+	}
 }

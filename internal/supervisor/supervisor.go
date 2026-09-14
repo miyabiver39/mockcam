@@ -160,6 +160,18 @@ func (s *Supervisor) RestartProfile(token string) error {
 	return nil
 }
 
+// StopProfile stops an FFmpeg worker for a deleted profile.
+func (s *Supervisor) StopProfile(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if oldWorker, exists := s.workers[token]; exists {
+		s.stopWorker(oldWorker)
+		delete(s.workers, token)
+		log.Printf("[supervisor] Profile '%s' stopped", token)
+	}
+}
+
 func (s *Supervisor) stopWorker(w *profileWorker) {
 	w.mu.Lock()
 	w.stopping = true

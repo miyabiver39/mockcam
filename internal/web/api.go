@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -15,6 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"mockcam/internal/config"
+	"mockcam/internal/logger"
 	"mockcam/internal/onvif"
 	"mockcam/internal/rtsp"
 	"mockcam/internal/supervisor"
@@ -58,6 +60,11 @@ func NewAPIHandler(
 		h.broadcastPTZ(pan, tilt, zoom, moving)
 	})
 
+	// Hook log messages to WebSocket broadcaster
+	logger.GlobalLogger.Subscribe(func(entry logger.LogEntry) {
+		h.broadcastLog(entry)
+	})
+
 	return h
 }
 
@@ -65,9 +72,15 @@ func NewAPIHandler(
 func (h *APIHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/status", h.handleStatus)
 	mux.HandleFunc("/api/config", h.handleConfig)
+	mux.HandleFunc("/api/config/reset", h.handleConfigReset)
+	mux.HandleFunc("/api/profiles", h.handleProfilesRoot)
 	mux.HandleFunc("/api/profiles/", h.handleProfiles)
 	mux.HandleFunc("/api/snapshot/", h.handleSnapshot)
 	mux.HandleFunc("/api/ptz", h.handlePTZ)
+	mux.HandleFunc("/api/ptz/presets", h.handlePTZPresets)
+	mux.HandleFunc("/api/clients", h.handleClients)
+	mux.HandleFunc("/api/logs", h.handleLogs)
+	mux.HandleFunc("/api/diagnostics/export", h.handleDiagnosticsExport)
 	mux.HandleFunc("/ws", h.handleWS)
 }
 
@@ -79,18 +92,24 @@ func (h *APIHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	cfg := h.cfgMgr.Get()
 	var rtspClients int64
+	var stats rtsp.StreamStats
 	if h.rtspServer != nil {
 		rtspClients = h.rtspServer.GetClientCount()
+		stats = h.rtspServer.GetStats()
 	}
 
 	status := map[string]interface{}{
 		"profiles_count": len(cfg.Profiles),
 		"uptime_seconds": int64(time.Since(h.startTime).Seconds()),
 		"rtsp_clients":   rtspClients,
+		"packets_sent":   stats.PacketsSent,
+		"bytes_sent":     stats.BytesSent,
+		"bitrate_kbps":   stats.BitrateKbps,
 		"version":        cfg.Server.DeviceInfo.FirmwareVersion,
 		"model":          cfg.Server.DeviceInfo.Model,
 		"auth_type":      cfg.Server.AuthType,
 		"auth_user":      cfg.Server.AuthUser,
+		"log_level":      string(logger.GlobalLogger.GetMinLevel()),
 		"rtsp_port":      cfg.Server.RTSPPort,
 		"http_port":      cfg.Server.HTTPPort,
 		"onvif_port":     cfg.Server.ONVIFPort,
@@ -168,6 +187,236 @@ func (h *APIHandler) handleProfiles(w http.ResponseWriter, r *http.Request) {
 			"profile": updated,
 		})
 
+	case http.MethodDelete:
+		if err := h.cfgMgr.DeleteProfile(token); err != nil {
+			http.Error(w, "Failed to delete profile: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if h.supervisor != nil {
+			h.supervisor.StopProfile(token)
+		}
+		if h.rtspServer != nil {
+			h.rtspServer.CloseStream(token)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "ok",
+			"message": "Profile deleted",
+			"token":   token,
+		})
+
+	default:
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *APIHandler) handleProfilesRoot(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(h.cfgMgr.Get().Profiles)
+	case http.MethodPost:
+		var newProf config.ProfileConfig
+		if err := json.NewDecoder(r.Body).Decode(&newProf); err != nil {
+			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(newProf.Token) == "" {
+			http.Error(w, "Profile token is required", http.StatusBadRequest)
+			return
+		}
+		if err := h.cfgMgr.AddProfile(newProf); err != nil {
+			http.Error(w, "Failed to add profile: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if h.supervisor != nil {
+			_ = h.supervisor.RestartProfile(newProf.Token)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "ok",
+			"message": "Profile created",
+			"profile": newProf,
+		})
+	default:
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *APIHandler) handleConfigReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := h.cfgMgr.ResetToDefaults(); err != nil {
+		http.Error(w, "Failed to reset config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Restart all profile workers
+	cfg := h.cfgMgr.Get()
+	if h.supervisor != nil {
+		for _, p := range cfg.Profiles {
+			_ = h.supervisor.RestartProfile(p.Token)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "ok",
+		"message": "Factory reset completed",
+		"config":  cfg,
+	})
+}
+
+func (h *APIHandler) handleClients(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var clients []rtsp.ClientInfo
+	if h.rtspServer != nil {
+		clients = h.rtspServer.GetClients()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(clients)
+}
+
+func (h *APIHandler) handleLogs(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		logs := logger.GlobalLogger.GetRecentLogs(200)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(logs)
+	case http.MethodPut:
+		// Change log level dynamically
+		var req struct {
+			Level string `json:"level"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		lvl := logger.LogLevel(strings.ToUpper(req.Level))
+		logger.GlobalLogger.SetMinLevel(lvl)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":    "ok",
+			"log_level": string(lvl),
+		})
+	default:
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *APIHandler) handleDiagnosticsExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	cfg := h.cfgMgr.Get()
+	var stats rtsp.StreamStats
+	var clients []rtsp.ClientInfo
+	if h.rtspServer != nil {
+		stats = h.rtspServer.GetStats()
+		clients = h.rtspServer.GetClients()
+	}
+
+	pan, tilt, zoom, moving := h.ptz.GetStatus()
+	diag := map[string]interface{}{
+		"export_time":    time.Now().Format(time.RFC3339),
+		"uptime_seconds": int64(time.Since(h.startTime).Seconds()),
+		"configuration":  cfg,
+		"streaming_metrics": map[string]interface{}{
+			"packets_sent":   stats.PacketsSent,
+			"bytes_sent":     stats.BytesSent,
+			"bitrate_kbps":   stats.BitrateKbps,
+			"active_readers": stats.ActiveReaders,
+		},
+		"active_clients": clients,
+		"ptz_status": map[string]interface{}{
+			"pan":       pan,
+			"tilt":      tilt,
+			"zoom":      zoom,
+			"is_moving": moving,
+		},
+		"recent_logs": logger.GlobalLogger.GetRecentLogs(500),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", "attachment; filename=mockcam-diagnostics.json")
+	_ = json.NewEncoder(w).Encode(diag)
+}
+
+func (h *APIHandler) handlePTZPresets(w http.ResponseWriter, r *http.Request) {
+	cfg := h.cfgMgr.Get()
+	switch r.Method {
+	case http.MethodGet:
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(cfg.PTZ.Presets)
+	case http.MethodPost:
+		var req struct {
+			Action string           `json:"action"` // "save_current", "goto", "delete"
+			Name   string           `json:"name"`
+			Preset config.PTZPreset `json:"preset"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		presets := cfg.PTZ.Presets
+		switch strings.ToLower(req.Action) {
+		case "save_current":
+			p, t, z, _ := h.ptz.GetStatus()
+			name := strings.TrimSpace(req.Name)
+			if name == "" {
+				name = fmt.Sprintf("Preset_%d", len(presets)+1)
+			}
+			// Update or append
+			updated := false
+			for i, pr := range presets {
+				if pr.Name == name {
+					presets[i] = config.PTZPreset{Name: name, Pan: p, Tilt: t, Zoom: z}
+					updated = true
+					break
+				}
+			}
+			if !updated {
+				presets = append(presets, config.PTZPreset{Name: name, Pan: p, Tilt: t, Zoom: z})
+			}
+			_ = h.cfgMgr.UpdatePTZPresets(presets)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "presets": presets})
+			return
+
+		case "goto":
+			for _, pr := range presets {
+				if pr.Name == req.Name {
+					h.ptz.AbsoluteMove(pr.Pan, pr.Tilt, pr.Zoom)
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "target": pr})
+					return
+				}
+			}
+			http.Error(w, "Preset not found", http.StatusNotFound)
+			return
+
+		case "delete":
+			filtered := make([]config.PTZPreset, 0, len(presets))
+			for _, pr := range presets {
+				if pr.Name != req.Name {
+					filtered = append(filtered, pr)
+				}
+			}
+			_ = h.cfgMgr.UpdatePTZPresets(filtered)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "presets": filtered})
+			return
+
+		default:
+			http.Error(w, "Unknown action: "+req.Action, http.StatusBadRequest)
+			return
+		}
 	default:
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	}
@@ -358,6 +607,23 @@ func (h *APIHandler) broadcastPTZ(pan, tilt, zoom float64, isMoving bool) {
 		"tilt":      tilt,
 		"zoom":      zoom,
 		"is_moving": isMoving,
+	}
+
+	for conn := range h.wsClients {
+		if err := conn.WriteJSON(msg); err != nil {
+			_ = conn.Close()
+			delete(h.wsClients, conn)
+		}
+	}
+}
+
+func (h *APIHandler) broadcastLog(entry logger.LogEntry) {
+	h.wsMu.Lock()
+	defer h.wsMu.Unlock()
+
+	msg := map[string]interface{}{
+		"type":  "log",
+		"entry": entry,
 	}
 
 	for conn := range h.wsClients {

@@ -156,6 +156,62 @@ func (m *Manager) UpdateServerConfig(srv ServerConfig) error {
 	return m.saveLocked()
 }
 
+// AddProfile adds a new profile if token doesn't already exist.
+func (m *Manager) AddProfile(prof ProfileConfig) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, p := range m.cfg.Profiles {
+		if p.Token == prof.Token {
+			return errors.New("profile with token already exists: " + prof.Token)
+		}
+	}
+	m.cfg.Profiles = append(m.cfg.Profiles, prof)
+	return m.saveLocked()
+}
+
+// DeleteProfile removes a profile by token.
+func (m *Manager) DeleteProfile(token string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.cfg.Profiles) <= 1 {
+		return errors.New("cannot delete the last remaining profile")
+	}
+
+	index := -1
+	for i, p := range m.cfg.Profiles {
+		if p.Token == token {
+			index = i
+			break
+		}
+	}
+	if index == -1 {
+		return errors.New("profile not found: " + token)
+	}
+
+	m.cfg.Profiles = append(m.cfg.Profiles[:index], m.cfg.Profiles[index+1:]...)
+	return m.saveLocked()
+}
+
+// ResetToDefaults resets the configuration back to factory default.
+func (m *Manager) ResetToDefaults() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.cfg = DefaultConfig()
+	return m.saveLocked()
+}
+
+// UpdatePTZPresets updates the list of saved PTZ presets.
+func (m *Manager) UpdatePTZPresets(presets []PTZPreset) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.cfg.PTZ.Presets = presets
+	return m.saveLocked()
+}
+
 // Save persists the current configuration to disk.
 func (m *Manager) Save() error {
 	m.mu.Lock()
