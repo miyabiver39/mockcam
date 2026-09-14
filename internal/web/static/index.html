@@ -36,7 +36,7 @@
         <div>
           <h1 class="text-lg font-bold text-white tracking-wide flex items-center space-x-2">
             <span>MockCam</span>
-            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" x-text="status.version ? (status.version.startsWith('v') ? status.version : 'v' + status.version) : 'v1.3.0'"></span>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" x-text="status.version ? (status.version.startsWith('v') ? status.version : 'v' + status.version) : 'v1.3.1'"></span>
           </h1>
           <p class="text-xs text-slate-400" x-text="status.model || 'MC-Pro-S'"></p>
         </div>
@@ -227,12 +227,16 @@
                             @change="applyResolutionPreset(profile, $event.target.value)"
                             class="bg-slate-950 border border-slate-700 text-[11px] rounded px-1.5 py-0.5 text-cyan-400 font-mono">
                       <option value="" x-text="t('opt_custom_res')">-- Preset --</option>
-                      <option value="3840x2160">4K UHD (3840x2160)</option>
-                      <option value="2560x1440">2K QHD (2560x1440)</option>
-                      <option value="1920x1080">1080p FHD (1920x1080)</option>
-                      <option value="1280x720">720p HD (1280x720)</option>
-                      <option value="854x480">480p SD (854x480)</option>
-                      <option value="640x360">360p nHD (640x360)</option>
+                      <option value="320x240">QVGA (320x240, 4:3)</option>
+                      <option value="480x320">HVGA (480x320, 3:2)</option>
+                      <option value="640x480">VGA (640x480, 4:3)</option>
+                      <option value="800x600">SVGA (800x600, 4:3)</option>
+                      <option value="1280x720">HD 720p (1280x720, 16:9)</option>
+                      <option value="1920x1080">FHD 1080p (1920x1080, 16:9)</option>
+                      <option value="2560x1440">2K QHD (2560x1440, 16:9)</option>
+                      <option value="3840x2160">4K UHD (3840x2160, 16:9)</option>
+                      <option value="7680x4320">8K UHD (7680x4320, 16:9)</option>
+                      <option value="15360x8640">16K (15360x8640, 16:9)</option>
                     </select>
                   </div>
                   <div class="flex items-center space-x-1">
@@ -974,7 +978,11 @@
           const w = profile.video.resolution.width;
           const h = profile.video.resolution.height;
           const val = `${w}x${h}`;
-          const presets = ['3840x2160', '2560x1440', '1920x1080', '1280x720', '854x480', '640x360'];
+          const presets = [
+            '320x240', '480x320', '640x480', '800x600',
+            '1280x720', '1920x1080', '2560x1440',
+            '3840x2160', '7680x4320', '15360x8640'
+          ];
           return presets.includes(val) ? val : '';
         },
         applyResolutionPreset(profile, val) {

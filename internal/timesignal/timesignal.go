@@ -24,6 +24,7 @@ const (
 type Service struct {
 	mu            sync.Mutex
 	voiceCache    map[string][]byte
+	hasOpenJTalk  bool
 	hasEspeak     bool
 	hasPowerShell bool
 }
@@ -32,6 +33,11 @@ type Service struct {
 func NewService() *Service {
 	s := &Service{
 		voiceCache: make(map[string][]byte),
+	}
+
+	// Check for open_jtalk availability
+	if _, err := exec.LookPath("open_jtalk"); err == nil {
+		s.hasOpenJTalk = true
 	}
 
 	// Check for espeak-ng availability
@@ -183,7 +189,7 @@ func (s *Service) buildPhrase(lang string, hour, min, sec int) string {
 		return fmt.Sprintf("%d minutes and %d seconds.", min, sec)
 	}
 
-	// Japanese 117 phrasing
+	// Japanese 117 phrasing with natural reading
 	period := "午前"
 	h12 := hour
 	if h12 >= 12 {
@@ -195,10 +201,40 @@ func (s *Service) buildPhrase(lang string, hour, min, sec int) string {
 	if h12 == 0 {
 		h12 = 12
 	}
-	if sec == 0 {
-		return fmt.Sprintf("%s%d時%d分をお知らせします。", period, h12, min)
+
+	// Natural Japanese hours
+	hourWords := map[int]string{
+		1: "いちじ", 2: "にじ", 3: "さんじ", 4: "よじ", 5: "ごじ", 6: "ろくじ",
+		7: "しちじ", 8: "はちじ", 9: "くじ", 10: "じゅうじ", 11: "じゅういちじ", 12: "じゅうにじ",
 	}
-	return fmt.Sprintf("%d分%d秒をお知らせします。", min, sec)
+	hStr := hourWords[h12]
+	if hStr == "" {
+		hStr = fmt.Sprintf("%dじ", h12)
+	}
+
+	// Natural Japanese minutes
+	minStr := formatJapaneseMinutes(min)
+
+	if sec == 0 {
+		return fmt.Sprintf("%s、%s、%sをお知らせします。", period, hStr, minStr)
+	}
+	return fmt.Sprintf("%s、%d秒をお知らせします。", minStr, sec)
+}
+
+func formatJapaneseMinutes(m int) string {
+	if m == 0 {
+		return "ちょうと"
+	}
+	units := []string{"", "いっぷん", "にふん", "さんぷん", "よんぷん", "ごふん", "ろっぷん", "ななふん", "はっぷん", "きゅうふん"}
+	tens := []string{"", "じゅう", "にじゅう", "さんじゅう", "よんじゅう", "ごじゅう"}
+
+	t := m / 10
+	u := m % 10
+
+	if u == 0 {
+		return tens[t] + "っぷん"
+	}
+	return tens[t] + units[u]
 }
 
 func (s *Service) synthesizeSpeech(text, lang string) []int16 {
@@ -211,28 +247,52 @@ func (s *Service) synthesizeSpeech(text, lang string) []int16 {
 
 	var rawWAV []byte
 
-	// 1. Try espeak-ng / espeak
-	if s.hasEspeak {
-		voice := "ja"
-		if lang == "en" {
-			voice = "en-us"
+	// 1. Try open_jtalk if available
+	if s.hasOpenJTalk {
+		// Common dictionary and voice paths
+		dicPaths := []string{"/var/lib/mecab/dic/open-jtalk/naist-jdic", "/usr/share/open-jtalk/dic", "/usr/local/dic"}
+		voicePaths := []string{"/usr/share/hts-voice/nitech-jp-atr503-m001/nitech_jp_atr503_m001.htsvoice", "/usr/local/voice/nitech_jp_atr503_m001.htsvoice"}
+
+		var foundDic, foundVoice string
+		for _, p := range dicPaths {
+			if _, err := os.Stat(p); err == nil {
+				foundDic = p
+				break
+			}
 		}
-		cmdName := "espeak-ng"
-		if _, err := exec.LookPath(cmdName); err != nil {
-			cmdName = "espeak"
+		for _, p := range voicePaths {
+			if _, err := os.Stat(p); err == nil {
+				foundVoice = p
+				break
+			}
 		}
-		cmd := exec.Command(cmdName, "-v", voice, "-s", "155", "-a", "100", text, "-w", "/dev/stdout")
-		var out bytes.Buffer
-		cmd.Stdout = &out
-		if err := cmd.Run(); err == nil && out.Len() > 44 {
-			rawWAV = out.Bytes()
+
+		if foundDic != "" && foundVoice != "" {
+			tmpWav := filepath.Join(os.TempDir(), fmt.Sprintf("mockcam_ojt_%d.wav", time.Now().UnixNano()))
+			cmd := exec.Command("open_jtalk", "-x", foundDic, "-m", foundVoice, "-ow", tmpWav)
+			cmd.Stdin = strings.NewReader(text)
+			if err := cmd.Run(); err == nil {
+				if data, readErr := os.ReadFile(tmpWav); readErr == nil && len(data) > 44 {
+					rawWAV = data
+				}
+				_ = os.Remove(tmpWav)
+			}
 		}
 	}
 
-	// 2. Try Windows PowerShell SAPI SpeechSynthesizer if on Windows
+	// 2. Try Windows PowerShell SAPI with preferred natural Japanese voice if on Windows
 	if len(rawWAV) == 0 && s.hasPowerShell {
 		tmpWav := filepath.Join(os.TempDir(), fmt.Sprintf("mockcam_voice_%d.wav", time.Now().UnixNano()))
-		script := fmt.Sprintf(`Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = 1; $s.SetOutputToWaveFile('%s'); $s.Speak('%s'); $s.Dispose()`, tmpWav, text)
+		script := fmt.Sprintf(`
+Add-Type -AssemblyName System.Speech;
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer;
+$s.Rate = 0;
+$voice = $s.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Culture -like "*ja*" } | Select-Object -First 1;
+if ($voice) { $s.SelectVoice($voice.VoiceInfo.Name) }
+$s.SetOutputToWaveFile('%s');
+$s.Speak('%s');
+$s.Dispose();
+`, tmpWav, text)
 		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
 		if err := cmd.Run(); err == nil {
 			if data, readErr := os.ReadFile(tmpWav); readErr == nil && len(data) > 44 {
@@ -242,7 +302,29 @@ func (s *Service) synthesizeSpeech(text, lang string) []int16 {
 		}
 	}
 
-	// 3. Fallback: Generate pleasant harmonic acoustic chime sequence
+	// 3. Try espeak-ng / espeak (tuned with smoother cadence)
+	if len(rawWAV) == 0 && s.hasEspeak {
+		voice := "ja"
+		speed := "130"
+		pitch := "52"
+		if lang == "en" {
+			voice = "en-us"
+			speed = "140"
+			pitch = "50"
+		}
+		cmdName := "espeak-ng"
+		if _, err := exec.LookPath(cmdName); err != nil {
+			cmdName = "espeak"
+		}
+		cmd := exec.Command(cmdName, "-v", voice, "-s", speed, "-p", pitch, "-a", "100", text, "-w", "/dev/stdout")
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		if err := cmd.Run(); err == nil && out.Len() > 44 {
+			rawWAV = out.Bytes()
+		}
+	}
+
+	// 4. Fallback: Generate pleasant harmonic acoustic chime sequence
 	if len(rawWAV) == 0 {
 		pcm := generateChimeTones(text)
 		return pcm

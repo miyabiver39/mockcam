@@ -140,4 +140,6 @@ func TestPTZStateMachine(t *testing.T) {
 	if panAfter <= 0.5 {
 		t.Errorf("expected pan to have increased from 0.5, got %f", panAfter)
 	}
+
+	ptz.WaitSync()
 }

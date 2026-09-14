@@ -1,7 +1,7 @@
 package config
 
 // AppVersion represents the current software release version.
-const AppVersion = "1.3.0"
+const AppVersion = "1.3.1"
 
 // Resolution defines video width and height.
 type Resolution struct {

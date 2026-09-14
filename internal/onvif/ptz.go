@@ -21,16 +21,17 @@ type PTZController struct {
 	stopChan  chan struct{}
 	listeners []func(pan, tilt, zoom float64)
 	mu        sync.RWMutex
+	wg        sync.WaitGroup
 }
 
 // NewPTZController creates a new PTZController initialized from config.
 func NewPTZController(cfgMgr *config.Manager) *PTZController {
 	cfg := cfgMgr.Get()
 	c := &PTZController{
-		cfgMgr:  cfgMgr,
-		pan:     clamp(cfg.PTZ.Pan, -1.0, 1.0),
-		tilt:    clamp(cfg.PTZ.Tilt, -1.0, 1.0),
-		zoom:    clamp(cfg.PTZ.Zoom, 0.0, 1.0),
+		cfgMgr:   cfgMgr,
+		pan:      clamp(cfg.PTZ.Pan, -1.0, 1.0),
+		tilt:     clamp(cfg.PTZ.Tilt, -1.0, 1.0),
+		zoom:     clamp(cfg.PTZ.Zoom, 0.0, 1.0),
 		stopChan: make(chan struct{}),
 	}
 	return c
@@ -48,10 +49,17 @@ func (c *PTZController) notifyListenersLocked() {
 	for _, fn := range c.listeners {
 		go fn(pan, tilt, zoom)
 	}
-	// Persist asynchronously
+	// Persist asynchronously with waitgroup tracking
+	c.wg.Add(1)
 	go func() {
+		defer c.wg.Done()
 		_ = c.cfgMgr.UpdatePTZ(pan, tilt, zoom)
 	}()
+}
+
+// WaitSync waits for all pending async persistence writes to finish.
+func (c *PTZController) WaitSync() {
+	c.wg.Wait()
 }
 
 // GetStatus returns the current PTZ coordinates and moving state.
