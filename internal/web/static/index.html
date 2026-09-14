@@ -36,7 +36,7 @@
         <div>
           <h1 class="text-lg font-bold text-white tracking-wide flex items-center space-x-2">
             <span>MockCam</span>
-            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" x-text="status.version ? (status.version.startsWith('v') ? status.version : 'v' + status.version) : 'v1.3.2'"></span>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" x-text="status.version ? (status.version.startsWith('v') ? status.version : 'v' + status.version) : 'v1.4.0'"></span>
           </h1>
           <p class="text-xs text-slate-400" x-text="status.model || 'MC-Pro-S'"></p>
         </div>
@@ -55,6 +55,10 @@
 
         <button @click="downloadDiagnostics()" class="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700 transition flex items-center space-x-1" title="Download JSON Diagnostic Bundle">
           <span x-text="t('btn_diagnostics')"></span>
+        </button>
+
+        <button @click="openLicenses()" class="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700 transition flex items-center space-x-1" :title="t('btn_about_title')">
+          <span x-text="t('btn_about')"></span>
         </button>
 
         <!-- Language Selector -->
@@ -585,6 +589,63 @@
 
   </main>
 
+  <!-- Footer -->
+  <footer class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 text-[11px] text-slate-500 flex flex-col sm:flex-row items-center justify-between gap-2 border-t border-slate-800/60 mt-4">
+    <span>MockCam <span x-text="status.version ? 'v' + String(status.version).replace(/^v/, '') : 'v1.4.0'"></span> &middot; MIT License &middot; &copy; 2026 MockCam contributors</span>
+    <span class="flex items-center space-x-3">
+      <a href="https://github.com/miyabiver39/mockcam" target="_blank" rel="noopener" class="hover:text-cyan-400">GitHub</a>
+      <button @click="openLicenses()" class="hover:text-cyan-400 underline decoration-dotted" x-text="t('link_licenses')"></button>
+    </span>
+  </footer>
+
+  <!-- About & Third-Party Licenses Modal -->
+  <div x-show="showLicenseModal" x-transition class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4" @keydown.escape.window="showLicenseModal = false">
+    <div class="bg-slate-900 border border-slate-800 rounded-xl max-w-3xl w-full p-5 space-y-4 shadow-2xl max-h-[90vh] flex flex-col">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div>
+          <h3 class="text-base font-bold text-white" x-text="t('licenses_title')"></h3>
+          <p class="text-xs text-slate-400" x-text="t('licenses_subtitle')"></p>
+        </div>
+        <button @click="showLicenseModal = false" class="text-slate-400 hover:text-white font-bold">&#x2715;</button>
+      </div>
+
+      <div class="text-xs text-slate-300 space-y-1">
+        <div>
+          <span class="font-semibold text-white">MockCam</span>
+          <span x-text="licenses.application.version ? 'v' + licenses.application.version : ''"></span>
+          &middot; <span x-text="licenses.application.license || 'MIT'"></span> License
+          &middot; <a :href="licenses.application.url" target="_blank" rel="noopener" class="text-cyan-400 hover:underline" x-text="licenses.application.url"></a>
+        </div>
+        <p class="text-slate-500" x-text="t('licenses_intro')"></p>
+      </div>
+
+      <div class="overflow-y-auto flex-1 -mx-1 px-1 space-y-4 text-xs">
+        <template x-for="group in licenseGroups" :key="group.kind">
+          <div>
+            <h4 class="text-[11px] uppercase tracking-wider text-slate-500 font-semibold mb-1.5" x-text="t('licenses_kind_' + group.kind)"></h4>
+            <div class="space-y-1.5">
+              <template x-for="c in group.items" :key="c.name">
+                <div class="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
+                  <div class="flex flex-wrap items-baseline justify-between gap-x-3">
+                    <a :href="c.url" target="_blank" rel="noopener" class="font-semibold text-cyan-400 hover:underline break-all" x-text="c.name + (c.version ? ' ' + c.version : '')"></a>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 whitespace-nowrap" x-text="c.license"></span>
+                  </div>
+                  <div class="text-slate-500 mt-0.5" x-show="c.copyright" x-text="c.copyright"></div>
+                  <div class="text-slate-400 mt-1 italic" x-show="c.notes" x-text="c.notes"></div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+        <div x-show="licenses.components.length === 0" class="text-slate-500 italic" x-text="t('licenses_loading')"></div>
+      </div>
+
+      <div class="flex justify-end pt-2 border-t border-slate-800">
+        <button @click="showLicenseModal = false" class="px-4 py-1.5 text-xs font-semibold rounded bg-slate-800 text-slate-300 hover:bg-slate-700" x-text="t('btn_close')"></button>
+      </div>
+    </div>
+  </div>
+
   <!-- Quick Play Launch Modal -->
   <div x-show="showLaunchModal" x-transition class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
     <div class="bg-slate-900 border border-slate-800 rounded-xl max-w-xl w-full p-5 space-y-4 shadow-2xl">
@@ -633,6 +694,19 @@
   <script>
     const I18N = {
       ja: {
+        btn_about: "ℹ️ 情報",
+        btn_about_title: "バージョン情報とライセンス",
+        link_licenses: "サードパーティライセンス",
+        licenses_title: "バージョン情報 & サードパーティライセンス",
+        licenses_subtitle: "MockCam に含まれる、または MockCam が利用するオープンソースコンポーネント",
+        licenses_intro: "本ソフトウェアは MIT License で公開されています。以下のコンポーネントはそれぞれのライセンスに基づいて利用しています。",
+        licenses_loading: "読み込み中...",
+        btn_close: "閉じる",
+        licenses_kind_go: "Go ライブラリ",
+        licenses_kind_frontend: "フロントエンド (CDN)",
+        licenses_kind_runtime: "ランタイムツール",
+        licenses_kind_tts: "音声合成 (TTS)",
+        licenses_kind_font: "フォント",
         btn_play_urls: "🚀 視聴URL",
         btn_diagnostics: "📥 診断出力",
         btn_refresh: "更新",
@@ -679,6 +753,19 @@
         ws_disconnected: "切断"
       },
       en: {
+        btn_about: "ℹ️ About",
+        btn_about_title: "Version & licenses",
+        link_licenses: "Third-party licenses",
+        licenses_title: "About & Third-Party Licenses",
+        licenses_subtitle: "Open-source components bundled with or used by MockCam",
+        licenses_intro: "This software is released under the MIT License. The components below are used under their respective licenses.",
+        licenses_loading: "Loading...",
+        btn_close: "Close",
+        licenses_kind_go: "Go libraries",
+        licenses_kind_frontend: "Frontend (CDN)",
+        licenses_kind_runtime: "Runtime tools",
+        licenses_kind_tts: "Speech synthesis (TTS)",
+        licenses_kind_font: "Fonts",
         btn_play_urls: "🚀 Play URLs",
         btn_diagnostics: "📥 Diagnostics",
         btn_refresh: "Refresh",
@@ -726,6 +813,19 @@
         ws_disconnected: "Disconnected"
       },
       zh: {
+        btn_about: "ℹ️ 关于",
+        btn_about_title: "版本与许可证",
+        link_licenses: "第三方许可证",
+        licenses_title: "关于 & 第三方许可证",
+        licenses_subtitle: "MockCam 内置或使用的开源组件",
+        licenses_intro: "本软件基于 MIT 许可证发布。以下组件依据各自的许可证使用。",
+        licenses_loading: "加载中...",
+        btn_close: "关闭",
+        licenses_kind_go: "Go 库",
+        licenses_kind_frontend: "前端 (CDN)",
+        licenses_kind_runtime: "运行时工具",
+        licenses_kind_tts: "语音合成 (TTS)",
+        licenses_kind_font: "字体",
         btn_play_urls: "🚀 播放URL",
         btn_diagnostics: "📥 诊断信息",
         btn_refresh: "刷新",
@@ -770,6 +870,19 @@
         ws_disconnected: "连接断开"
       },
       ko: {
+        btn_about: "ℹ️ 정보",
+        btn_about_title: "버전 및 라이선스",
+        link_licenses: "서드파티 라이선스",
+        licenses_title: "정보 & 서드파티 라이선스",
+        licenses_subtitle: "MockCam에 포함되거나 MockCam이 사용하는 오픈소스 구성 요소",
+        licenses_intro: "이 소프트웨어는 MIT 라이선스로 공개됩니다. 아래 구성 요소는 각각의 라이선스에 따라 사용됩니다.",
+        licenses_loading: "불러오는 중...",
+        btn_close: "닫기",
+        licenses_kind_go: "Go 라이브러리",
+        licenses_kind_frontend: "프론트엔드 (CDN)",
+        licenses_kind_runtime: "런타임 도구",
+        licenses_kind_tts: "음성 합성 (TTS)",
+        licenses_kind_font: "글꼴",
         btn_play_urls: "🚀 재생 URL",
         btn_diagnostics: "📥 진단 번들",
         btn_refresh: "새로고침",
@@ -814,6 +927,19 @@
         ws_disconnected: "연결 끊김"
       },
       es: {
+        btn_about: "ℹ️ Acerca de",
+        btn_about_title: "Versión y licencias",
+        link_licenses: "Licencias de terceros",
+        licenses_title: "Acerca de & Licencias de terceros",
+        licenses_subtitle: "Componentes de código abierto incluidos o utilizados por MockCam",
+        licenses_intro: "Este software se publica bajo la licencia MIT. Los componentes siguientes se utilizan bajo sus respectivas licencias.",
+        licenses_loading: "Cargando...",
+        btn_close: "Cerrar",
+        licenses_kind_go: "Bibliotecas Go",
+        licenses_kind_frontend: "Frontend (CDN)",
+        licenses_kind_runtime: "Herramientas de ejecución",
+        licenses_kind_tts: "Síntesis de voz (TTS)",
+        licenses_kind_font: "Fuentes",
         btn_play_urls: "🚀 URLs de Transmisión",
         btn_diagnostics: "📥 Diagnósticos",
         btn_refresh: "Actualizar",
@@ -858,6 +984,19 @@
         ws_disconnected: "Desconectado"
       },
       fr: {
+        btn_about: "ℹ️ À propos",
+        btn_about_title: "Version et licences",
+        link_licenses: "Licences tierces",
+        licenses_title: "À propos & Licences tierces",
+        licenses_subtitle: "Composants open source inclus ou utilisés par MockCam",
+        licenses_intro: "Ce logiciel est publié sous licence MIT. Les composants ci-dessous sont utilisés selon leurs licences respectives.",
+        licenses_loading: "Chargement...",
+        btn_close: "Fermer",
+        licenses_kind_go: "Bibliothèques Go",
+        licenses_kind_frontend: "Frontend (CDN)",
+        licenses_kind_runtime: "Outils d'exécution",
+        licenses_kind_tts: "Synthèse vocale (TTS)",
+        licenses_kind_font: "Polices",
         btn_play_urls: "🚀 URLs de Flux",
         btn_diagnostics: "📥 Diagnostics",
         btn_refresh: "Actualiser",
@@ -902,6 +1041,19 @@
         ws_disconnected: "Déconnecté"
       },
       de: {
+        btn_about: "ℹ️ Info",
+        btn_about_title: "Version & Lizenzen",
+        link_licenses: "Drittanbieter-Lizenzen",
+        licenses_title: "Info & Drittanbieter-Lizenzen",
+        licenses_subtitle: "Open-Source-Komponenten, die MockCam enthält oder verwendet",
+        licenses_intro: "Diese Software wird unter der MIT-Lizenz veröffentlicht. Die folgenden Komponenten werden gemäß ihren jeweiligen Lizenzen verwendet.",
+        licenses_loading: "Wird geladen...",
+        btn_close: "Schließen",
+        licenses_kind_go: "Go-Bibliotheken",
+        licenses_kind_frontend: "Frontend (CDN)",
+        licenses_kind_runtime: "Laufzeit-Tools",
+        licenses_kind_tts: "Sprachsynthese (TTS)",
+        licenses_kind_font: "Schriftarten",
         btn_play_urls: "🚀 Stream URLs",
         btn_diagnostics: "📥 Diagnose",
         btn_refresh: "Aktualisieren",
@@ -1031,6 +1183,8 @@
         snapshotInterval: 3000,
         snapshotTimer: null,
         showLaunchModal: false,
+        showLicenseModal: false,
+        licenses: { application: {}, components: [] },
         toast: { show: false, message: '', type: 'success' },
 
         init() {
@@ -1292,6 +1446,26 @@
 
         downloadDiagnostics() {
           window.location.href = '/api/diagnostics/export';
+        },
+
+        async openLicenses() {
+          this.showLicenseModal = true;
+          if (this.licenses.components.length > 0) return;
+          try {
+            const res = await fetch('/api/licenses');
+            if (res.ok) this.licenses = await res.json();
+          } catch (e) {
+            console.error('Failed to load licenses', e);
+          }
+        },
+
+        get licenseGroups() {
+          const order = ['go', 'frontend', 'runtime', 'tts', 'font'];
+          const groups = {};
+          for (const c of this.licenses.components) {
+            (groups[c.kind] = groups[c.kind] || []).push(c);
+          }
+          return order.filter(k => groups[k]).map(k => ({ kind: k, items: groups[k] }));
         },
 
         connectWebSocket() {

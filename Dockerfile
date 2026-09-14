@@ -2,7 +2,7 @@
 # Stage 1: Cross-compile Go binary on the BUILD platform (never runs under QEMU)
 #   This avoids the QEMU arm64 HTTP/2 crash that occurs with go mod download.
 # =============================================================================
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS go-builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -20,7 +20,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 # Stage 2: Compile Open JTalk on the TARGET platform and download assets
 #   Runs under QEMU for arm64, but no Go/HTTP2 involved — pure C/cmake only.
 # =============================================================================
-FROM golang:1.23-alpine AS jtalk-builder
+FROM alpine:3.22 AS jtalk-builder
 
 # Install build dependencies
 RUN apk add --no-cache \
@@ -80,9 +80,10 @@ RUN curl -sL \
 # =============================================================================
 # Stage 3: Runtime image
 # =============================================================================
-FROM alpine:3.20
+FROM alpine:3.22
 
-RUN apk add --no-cache \
+# --upgrade pulls the latest patched packages so image scans stay clean.
+RUN apk add --no-cache --upgrade \
     ffmpeg \
     tzdata \
     ca-certificates \
@@ -109,5 +110,8 @@ RUN mkdir -p /config /media
 VOLUME ["/config", "/media"]
 
 EXPOSE 8554 8080 3702/udp
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD wget -q -O /dev/null http://127.0.0.1:8080/api/status || exit 1
 
 ENTRYPOINT ["/app/mockcam"]

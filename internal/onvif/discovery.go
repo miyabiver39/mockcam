@@ -98,26 +98,46 @@ func (d *DiscoveryServer) listenLoop() {
 	}
 }
 
-func (d *DiscoveryServer) isProbe(data []byte) bool {
+func (d *DiscoveryServer) isProbe(data []byte) bool { return IsProbe(data) }
+
+// IsProbe reports whether a UDP datagram looks like a WS-Discovery Probe.
+func IsProbe(data []byte) bool {
 	str := string(data)
 	return strings.Contains(str, "http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe") ||
-		strings.Contains(str, "Probe") && strings.Contains(str, "discovery")
+		(strings.Contains(str, "Probe") && strings.Contains(str, "discovery"))
 }
 
 func (d *DiscoveryServer) handleProbe(data []byte, src *net.UDPAddr) {
-	var env ProbeEnvelope
-	if err := xml.Unmarshal(data, &env); err != nil {
-		// If unmarshal fails, still extract message ID if possible
-		log.Printf("[onvif] Warning: Failed to parse probe XML: %v", err)
-	}
-
-	messageID := env.Header.MessageID
-	if messageID == "" {
-		messageID = "urn:uuid:00000000-0000-0000-0000-000000000000"
-	}
-
-	localIP := getOutboundIP(src.IP)
 	cfg := d.cfgMgr.Get()
+	localIP := getOutboundIP(src.IP)
+
+	fullPayload, err := BuildProbeMatches(data, localIP, cfg)
+	if err != nil {
+		log.Printf("[onvif] Failed to build ProbeMatches: %v", err)
+		return
+	}
+
+	if _, err := d.conn.WriteToUDP(fullPayload, src); err != nil {
+		log.Printf("[onvif] Failed to send ProbeMatches to %s: %v", src.String(), err)
+		return
+	}
+	log.Printf("[onvif] Sent ProbeMatches to %s (XAddrs: http://%s:%d/onvif/device_service)", src.String(), localIP, cfg.Server.HTTPPort)
+}
+
+// ProbeMessageID extracts the WS-Addressing MessageID from a Probe so the
+// reply can reference it in RelatesTo. A placeholder is returned when the
+// probe cannot be parsed, which keeps lenient clients working.
+func ProbeMessageID(probe []byte) string {
+	var env ProbeEnvelope
+	if err := xml.Unmarshal(probe, &env); err == nil && env.Header.MessageID != "" {
+		return env.Header.MessageID
+	}
+	return "urn:uuid:00000000-0000-0000-0000-000000000000"
+}
+
+// BuildProbeMatches renders the WS-Discovery ProbeMatches reply for a Probe
+// received from a client, advertising the device service at localIP.
+func BuildProbeMatches(probe []byte, localIP string, cfg config.Config) ([]byte, error) {
 	xAddr := fmt.Sprintf("http://%s:%d/onvif/device_service", localIP, cfg.Server.HTTPPort)
 
 	resp := ProbeMatchesEnvelope{
@@ -125,10 +145,9 @@ func (d *DiscoveryServer) handleProbe(data []byte, src *net.UDPAddr) {
 		WsaAttr:  "http://schemas.xmlsoap.org/ws/2004/08/addressing",
 		DAttr:    "http://schemas.xmlsoap.org/ws/2005/04/discovery",
 	}
-
 	resp.Header.WsaAction = "http://schemas.xmlsoap.org/ws/2005/04/discovery/ProbeMatches"
 	resp.Header.WsaMessageID = fmt.Sprintf("urn:uuid:%s", uuid.New().String())
-	resp.Header.WsaRelatesTo = messageID
+	resp.Header.WsaRelatesTo = ProbeMessageID(probe)
 	resp.Header.WsaTo = "http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous"
 
 	scopes := "onvif://www.onvif.org/type/NetworkVideoTransmitter " +
@@ -143,24 +162,13 @@ func (d *DiscoveryServer) handleProbe(data []byte, src *net.UDPAddr) {
 		MetadataVersion: 1,
 	}
 	item.EndpointReference.Address = fmt.Sprintf("urn:uuid:%s", cfg.Server.DeviceInfo.SerialNumber)
-
 	resp.Body.ProbeMatches.ProbeMatch = []ProbeMatchItem{item}
 
 	respBytes, err := xml.MarshalIndent(resp, "", "  ")
 	if err != nil {
-		log.Printf("[onvif] Failed to marshal ProbeMatches: %v", err)
-		return
+		return nil, err
 	}
-
-	xmlHeader := []byte("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-	fullPayload := append(xmlHeader, respBytes...)
-
-	_, err = d.conn.WriteToUDP(fullPayload, src)
-	if err != nil {
-		log.Printf("[onvif] Failed to send ProbeMatches to %s: %v", src.String(), err)
-	} else {
-		log.Printf("[onvif] Sent ProbeMatches to %s (XAddrs: %s)", src.String(), xAddr)
-	}
+	return append([]byte(xml.Header), respBytes...), nil
 }
 
 func getOutboundIP(dest net.IP) string {

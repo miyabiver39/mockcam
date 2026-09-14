@@ -3,7 +3,7 @@
 [![CI/CD Pipeline](https://github.com/miyabiver39/mockcam/actions/workflows/ci.yml/badge.svg)](https://github.com/miyabiver39/mockcam/actions)
 [![Release](https://img.shields.io/github/v/release/miyabiver39/mockcam?include_prereleases&color=06b6d4)](https://github.com/miyabiver39/mockcam/releases)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go)](go.mod)
+[![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](go.mod)
 [![Docker](https://img.shields.io/badge/Docker-Multi--Arch-2496ED?logo=docker)](Dockerfile)
 
 `MockCam` は、VMS（ビデオ管理システム）や NVR、監視カメラ連携システムの開発・負荷検証のために設計された、高スケーラブルな**仮想ネットワークカメラエミュレーター**です。
@@ -23,8 +23,9 @@ Go による完全静的リンクバイナリと `gortsplib/v4` による 1:N �
 * **🎞️ テストパターン & オーバーレイ**:
   * 映像ソースは `testsrc2` / `smptebars` / `allrgb` / `mptestsrc` から選択、または動画ファイルをループ再生（`source_mode: "file"`）。
   * PTS タイムコード（`HH:MM:SS.mmm`）、任意の OSD テキスト、センサーノイズ、VMS の動体検知テスト用の移動バウンディングボックスを重畳可能。
-* **⏱️ 時報同期音声**:
-  * 時報モード（`time_signal`）、無音（`silent`）、ホワイトノイズ（`noise`）、チャイム（`chime`）の 4 種類の音声モードを搭載。
+* **⏱️ 時報音声（ビープ / 117 読み上げ）**:
+  * 880 Hz ビープ時報（`time_signal`）、無音（`silent`）、ホワイトノイズ（`noise`）、チャイム（`chime`）に加え、**117 時報の音声読み上げ**（`time_signal_ja` / `time_signal_en`）を搭載。
+  * 日本語は Open JTalk（tohoku-f01 女声）、英語は espeak-ng / Windows SAPI で合成。10 秒ごとに次の時刻を読み上げ、`:07 :08 :09` に 880 Hz の予報音、`:00` に 880 Hz のマーク音を鳴らします（放送規格の再現ではなく、聞き心地を優先したデザイン）。
 * **📡 ONVIF Profile S 完全準拠**:
   * **WS-Discovery**: UDP 3702（マルチキャスト `239.255.255.250`）による自動検出に対応。
   * **SOAP サービス群**: Device Service、Media Service、PTZ Service を規格に準拠して実装。
@@ -60,7 +61,7 @@ docker run -d \
   ghcr.io/miyabiver39/mockcam:latest
 ```
 
-### 3. ローカルビルド & 実行 (Go 1.23+)
+### 3. ローカルビルド & 実行 (Go 1.26+)
 
 FFmpeg がインストールされている環境であれば、直接ビルド・実行も可能です。
 
@@ -241,7 +242,7 @@ ffplay rtsp://admin:admin1234@localhost:8554/live/Profile_2
 | `video.enable_noise` | センサーノイズ（グレイン）を付加 | `false` |
 | `video.enable_motion_box` | 動体検知テスト用の赤い移動バウンディングボックスを描画 | `false` |
 | `audio.enabled` | 音声トラックの有無 | `true` |
-| `audio.mode` | 音声モード (`time_signal`: 880Hz 時報, `silent`: 無音, `noise`: ホワイトノイズ, `chime`: チャイム) | `time_signal` |
+| `audio.mode` | 音声モード (`time_signal`: 880Hz ビープ時報, `time_signal_ja` / `time_signal_en`: 117 音声読み上げ + 880Hz 時報音, `silent`: 無音, `noise`: ホワイトノイズ, `chime`: チャイム) | `time_signal` |
 | `audio.codec` | 音声コーデック（現在は `AAC` のみ） | `AAC` |
 | `audio.bitrate_kbps` / `audio.sample_rate` | 音声ビットレート (kbps) / サンプリングレート (Hz) | `128` / `44100` |
 
@@ -255,6 +256,28 @@ ffplay rtsp://admin:admin1234@localhost:8554/live/Profile_2
 | `zoom` | 仮想ズーム（`0.0`〜`1.0`） | `0` |
 | `speed` | 予約項目（現在未使用。ContinuousMove は速度ベクトル × 10%/秒 で座標を更新） | （省略） |
 | `presets[]` | 保存済みプリセット `{ "name", "pan", "tilt", "zoom" }` の配列。Web UI / `/api/ptz/presets` から管理 | （省略） |
+
+---
+
+## 🔊 117 時報（音声読み上げ）の仕組み
+
+`audio.mode` を `time_signal_ja` / `time_signal_en` にすると、FFmpeg は内部 HTTP エンドポイント `/api/audio/timesignal?lang=ja|en` から 48 kHz / 16-bit / mono の PCM を受け取ります。1 分間のタイムラインは次のとおりです。
+
+| 秒 (10 秒ブロック内) | 内容 |
+|---|---|
+| `:01` 〜 `:03` | 次の 10 秒マークの時刻を読み上げ（例:「25分30秒をお知らせします」、毎分 `:00` は「午後3時25分をお知らせします」） |
+| `:07` `:08` `:09` | 880 Hz 予報音（100 ms、レイズドコサインで立ち上げ/立ち下げ） |
+| `:00` | 880 Hz マーク音（800 ms、ベル状の減衰） |
+
+### Open JTalk のパラメータ方針
+
+同梱の HTS 音声モデル（tohoku-f01 / nitech）は **48 kHz** で学習されています。`-s` でサンプルレートだけを変更すると、メルケプストラムの周波数ワープ係数（`-a`）と整合しなくなり、スペクトル包絡が歪んで不自然な（こもった・不気味な）声になります。v1.4.0 からは次の方針に統一しました。
+
+* `open_jtalk -x <dic> -m <voice> -r 1.00 -ow <wav>` のみを渡し、サンプルレート・α・ピッチ（`-fm`）はモデル既定値を使う
+* WAV は Go 側で RIFF チャンクを正しくパースし、必要な場合のみリサンプリング
+* 無音トリミング・10 ms フェード・ピーク正規化（-4.4 dBFS）を施し、時報音と混合してもクリップしない
+
+TTS エンジンの検出順序は Open JTalk（日本語） → Windows SAPI → espeak-ng → チャイム（フォールバック）です。辞書・音声モデルの場所は環境変数 `MOCKCAM_OPENJTALK_DIC` / `MOCKCAM_OPENJTALK_VOICE` で上書きできます。
 
 ---
 
@@ -306,17 +329,25 @@ net.core.wmem_max = 16777216
 
 ### サードパーティライブラリ・データセット
 
-本ソフトウェアには、以下のサードパーティコンポーネントが含まれています。
+本ソフトウェアには、以下のサードパーティコンポーネントが含まれています。同じ一覧は Web ダッシュボードの「ℹ️ 情報」ボタンおよび `GET /api/licenses` からも参照できます（`internal/licenses` が単一の情報源です）。
 
 | コンポーネント | ライセンス | 著作権者 |
 |---|---|---|
-| [Open JTalk](https://open-jtalk.sourceforge.net/) | Modified BSD License | Copyright (C) 2008-2016 Nagoya Institute of Technology |
-| [HTS Engine API](https://hts-engine.sourceforge.net/) | Modified BSD License | Copyright (C) 2001-2015 HTS Working Group |
-| NAIST-jdic (open_jtalk_dic_utf_8-1.11) | BSD License | Copyright (C) 2008-2016 Nagoya Institute of Technology |
-| HTS Voice tohoku-f01-neutral | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | Tohoku University, Graduate School of Information Sciences |
-| [gortsplib/v4](https://github.com/bluenviron/gortsplib) | MIT License | bluenviron |
-| [gorilla/websocket](https://github.com/gorilla/websocket) | BSD-2-Clause License | The Gorilla Authors |
+| [gortsplib/v5](https://github.com/bluenviron/gortsplib) | MIT License | bluenviron |
+| [gorilla/websocket](https://github.com/gorilla/websocket) | BSD-2-Clause License | The Gorilla WebSocket Authors |
 | [google/uuid](https://github.com/google/uuid) | BSD-3-Clause License | Google LLC |
+| [pion/rtp](https://github.com/pion/rtp), [pion/rtcp](https://github.com/pion/rtcp), pion/sdp, pion/srtp, pion/transport | MIT License | The Pion community |
+| [bluenviron/mediacommon](https://github.com/bluenviron/mediacommon) | MIT License | bluenviron |
+| golang.org/x/net, golang.org/x/sys, Go 標準ライブラリ | BSD-3-Clause License | The Go Authors |
+| [Tailwind CSS](https://github.com/tailwindlabs/tailwindcss)（Play CDN） | MIT License | Tailwind Labs, Inc. |
+| [Alpine.js](https://github.com/alpinejs/alpine) | MIT License | Caleb Porzio and contributors |
+| [FFmpeg](https://ffmpeg.org/)（外部プロセスとして起動） | GPL-2.0-or-later / LGPL-2.1-or-later | the FFmpeg developers |
+| [espeak-ng](https://github.com/espeak-ng/espeak-ng)（外部プロセスとして起動） | GPL-3.0-or-later | eSpeak NG contributors |
+| [Open JTalk](https://open-jtalk.sourceforge.net/) | Modified BSD License | Copyright (C) 2008-2016 Nagoya Institute of Technology |
+| [HTS Engine API](https://hts-engine.sourceforge.net/) | Modified BSD License | Copyright (C) 2001-2015 Nagoya Institute of Technology / Tokyo Institute of Technology |
+| NAIST-jdic (open_jtalk_dic_utf_8-1.11) | BSD-3-Clause License | Copyright (C) 2009 Nara Institute of Science and Technology |
+| HTS Voice tohoku-f01-neutral | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | Tohoku University, Graduate School of Information Sciences |
+| [DejaVu Fonts](https://dejavu-fonts.github.io/) | Bitstream Vera License / Public Domain | Bitstream, Inc. / DejaVu contributors |
 
 > **HTS Voice tohoku-f01-neutral (CC BY 4.0) Attribution**:
 > This product uses the HTS voice model `tohoku-f01-neutral` created by the Tohoku University, Graduate School of Information Sciences, licensed under the [Creative Commons Attribution 4.0 International License](https://creativecommons.org/licenses/by/4.0/).

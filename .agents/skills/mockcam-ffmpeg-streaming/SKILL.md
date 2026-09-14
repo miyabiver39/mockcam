@@ -43,7 +43,9 @@ Always ensure `setpts=PTS-STARTPTS` (video) and `asetpts=PTS-STARTPTS` (audio) a
 ## 2. Audio Pipeline & Modes
 
 MockCam supports:
-- `time_signal_ja` / `time_signal_en`: Streaming real-time PCM audio from internal HTTP endpoint `/api/audio/timesignal?lang=ja|en` via `-re -f s16le -ar 22050 -ac 1 -i http://127.0.0.1:<httpPort>/api/audio/timesignal?lang=<lang>`.
+- `time_signal_ja` / `time_signal_en`: Streaming real-time PCM audio from internal HTTP endpoint `/api/audio/timesignal?lang=ja|en` via `-re -f s16le -ar 48000 -ac 1 -i http://127.0.0.1:<httpPort>/api/audio/timesignal?lang=<lang>`. The sample rate comes from `timesignal.SampleRate` — never hard-code it.
+  - Speech: Open JTalk is run at the voice model's **native 48 kHz** with only `-x`, `-m`, `-r 1.00`, `-ow` (no `-s`/`-a`/`-fm`; those distort the voice). Output is parsed by `timesignal.ParseWAV`, trimmed, faded and peak-normalised to -4.4 dBFS.
+  - Tones: 880 Hz pips at :07/:08/:09 (100 ms) and an 880 Hz mark at :00 (800 ms), raised-cosine envelopes (`internal/timesignal/tones.go`).
 - `time_signal`: Pure 880Hz sine beeps via `sine=frequency=880:beep_factor=4:r=<sampleRate>`.
 - `noise`: Pinkish noise via `anoisesrc=sample_rate=<sampleRate>:amplitude=0.05`.
 - `chime`: 1046.5Hz bell chime via `sine=frequency=1046.5:beep_factor=2:r=<sampleRate>`.

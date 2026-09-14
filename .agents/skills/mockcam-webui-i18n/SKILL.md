@@ -61,7 +61,13 @@ To prevent excessive vertical scrolling:
   - Bound in `setupKeyboardPTZ()`: `W/A/S/D`, arrow keys, `+/-` zoom, `Space` home.
   - Automatically disabled when focusing `input`, `textarea`, or `select` elements.
 
-## 4. Static Asset References
+## 4. About / Licenses Modal
+
+- The header "ℹ️" button and the footer link call `openLicenses()`, which lazily fetches `GET /api/licenses` and opens `showLicenseModal`.
+- Component data comes from `internal/licenses/licenses.go` (single source of truth). Do **not** hard-code library names in the HTML; add new dependencies there and `licenses_test.go` will cross-check `go.mod` and the CDN `<script>` tags.
+- Group headings use the keys `licenses_kind_go|frontend|runtime|tts|font` — add translations for all 7 languages when adding a kind.
+
+## 5. Static Asset References
 
 - Assets reside in `internal/web/static/` and are served at root (`/`):
   - `favicon.png` -> `<link rel="icon" type="image/png" href="/favicon.png">`

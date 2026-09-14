@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"mockcam/internal/config"
+	"mockcam/internal/timesignal"
 )
 
 // BuildFFmpegArgs generates the argument slice for FFmpeg based on profile configuration.
@@ -107,7 +108,7 @@ func BuildFFmpegArgs(profile config.ProfileConfig, rtspPort int, httpPort ...int
 			if audioMode == "time_signal_en" {
 				lang = "en"
 			}
-			args = append(args, "-re", "-f", "s16le", "-ar", "22050", "-ac", "1", "-i", fmt.Sprintf("http://127.0.0.1:%d/api/audio/timesignal?lang=%s", hPort, lang))
+			args = append(args, "-re", "-f", "s16le", "-ar", fmt.Sprintf("%d", timesignal.SampleRate), "-ac", "1", "-i", fmt.Sprintf("http://127.0.0.1:%d/api/audio/timesignal?lang=%s", hPort, lang))
 		case "time_signal":
 			audioFilter := fmt.Sprintf("sine=frequency=880:beep_factor=4:r=%d,asetpts=PTS-STARTPTS", sampleRate)
 			args = append(args, "-re", "-f", "lavfi", "-i", audioFilter)

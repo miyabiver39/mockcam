@@ -6,16 +6,18 @@ MockCam は Go 製の仮想ネットワークカメラエミュレーターで�
 
 - `cmd/mockcam/main.go`: エントリポイント。config → auth/PTZ → rtsp → supervisor → onvif/discovery → web の順に起動。
 - `internal/config`: `settings.json` の型定義とデフォルト値、`Manager`（RWMutex、`Get()` はディープコピー、`Update*` は即永続化）。
-- `internal/supervisor`: プロファイルごとの FFmpeg ワーカー。`BuildFFmpegArgs` が引数を組み立てる純粋関数。
-- `internal/rtsp`: RTSP サーバー。パスは `/live/<token>`。ループバックからの publish は認証免除。
+- `internal/supervisor`: プロファイルごとの FFmpeg ワーカー。`BuildFFmpegArgs` が引数を組み立てる純粋関数。`WithCommandFactory` でプロセス生成を注入可能。
+- `internal/rtsp`: gortsplib/v5 ベースの RTSP サーバー。パスは `/live/<token>`。ループバックからの publish は認証免除（`authorizeRequest` は純粋関数）。
+- `internal/timesignal`: 117 時報。Open JTalk はネイティブ 48 kHz で合成（`-s`/`-a`/`-fm` 禁止）、880 Hz の時報音、`Runner`/`Synthesizer` で外部プロセスを抽象化。
+- `internal/licenses`: サードパーティ帰属の単一情報源（`/api/licenses`、UI の情報モーダル、README）。
 - `internal/onvif`: SOAP ディスパッチ（`/onvif/device_service` など）、PTZ 仮想状態機械、WS-Discovery（UDP 3702）。
-- `internal/web`: HTTP サーバー、`/api/*` と `/ws`、`go:embed` された `static/index.html`（Tailwind CDN + Alpine.js、ビルド不要）。
+- `internal/web`: HTTP サーバー、`/api/*`（`api_*.go` に分割）と `/ws`、`go:embed` された `static/index.html`（Tailwind CDN + Alpine.js、ビルド不要）。supervisor/rtsp はインターフェースで受け取る。
 - `internal/auth`: Basic / Digest 認証（HTTP・RTSP 共用）。`internal/logger`: リングバッファ + WebSocket 配信ロガー。
 - `docs/rest_api.md`, `docs/onvif_profile_s.md`: API / ONVIF 仕様（日本語）。
 
 ## コーディング規約
 
-- Go 1.23、モジュール名 `mockcam`。標準ライブラリを優先し、新規依存の追加は避ける。
+- Go 1.26、モジュール名 `mockcam`。標準ライブラリを優先し、新規依存の追加は避ける。追加した場合は `internal/licenses/licenses.go` にも登録する。
 - エクスポート識別子には英語の doc コメントを付ける。コメントは英語、`README.md` / `docs/` は日本語。
 - エラーは `fmt.Errorf("...: %w", err)` でラップする。
 - 共有状態は `mu.Lock(); defer mu.Unlock()` と `*Locked` サフィックスの内部メソッドで扱う。goroutine には `context` と `WaitGroup` で停止経路を用意する。
@@ -28,8 +30,8 @@ MockCam は Go 製の仮想ネットワークカメラエミュレーターで�
 
 ## テスト
 
-- `go vet ./...` と `go test ./...` が CI の必須チェック。
-- テストは FFmpeg やネットワーク待受なしで動くようにする（`t.TempDir()` で設定を分離、`httptest` を使用、supervisor / rtsp は `nil` 可）。
+- `gofmt -l .`、`go vet ./...`、`go mod tidy`（差分なし）、`govulncheck ./...`、`go test -race ./...` が CI の必須チェック。
+- テストは FFmpeg やネットワーク待受なしで動くようにする（`t.TempDir()` で設定を分離、`httptest` を使用、supervisor / rtsp はフェイクまたは `nil`、外部コマンドは `Runner` / `CommandFactory` のフェイク）。
 - FFmpeg 引数を変えたら `supervisor_test.go`、ONVIF レスポンスを変えたら `onvif_test.go` に検証を追加する。
 - 編集したファイルのみ `gofmt` を適用する。
 

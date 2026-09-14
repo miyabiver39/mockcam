@@ -4,7 +4,7 @@
 
 ## 1. プロジェクト概要
 
-MockCam は VMS / NVR の開発・負荷検証用の **仮想ネットワークカメラエミュレーター** です。Go 製の単一静的バイナリで、以下を 1 プロセスで提供します。
+MockCam は VMS / NVR の開発・負荷検証用の **仮想ネットワークカメラエミュレーター** です。Go 1.26 製の単一静的バイナリで、以下を 1 プロセスで提供します。
 
 | 機能 | ポート | 実装パッケージ |
 |---|---|---|
@@ -20,21 +20,25 @@ MockCam は VMS / NVR の開発・負荷検証用の **仮想ネットワーク�
 ```
 cmd/mockcam/main.go        エントリポイント。各サブシステムを順に起動し、SIGINT/SIGTERM で graceful shutdown
 internal/
-  config/                  settings.json の読み書き・型定義・デフォルト値 (types.go / config.go)
+  config/                  settings.json の読み書き・型定義・デフォルト値 (types.go / config.go)、入力検証 (validate.go)
   auth/                    Basic / Digest 認証（HTTP と RTSP で共用、realm="MockCam"）
   logger/                  リングバッファ付き構造化ロガー。Web UI へ WebSocket でライブ配信される
   supervisor/              プロファイルごとの FFmpeg ワーカー管理（起動・自動再起動・ホットリロード）
     ffmpeg_cmd.go          設定 → FFmpeg 引数列を組み立てる純粋関数 BuildFFmpegArgs
-  rtsp/                    gortsplib ベースの RTSP サーバー（publish 受付・reader ファンアウト・統計）
+    supervisor.go          CommandFactory を注入可能（テストはフェイクプロセスで実行）
+  rtsp/                    gortsplib/v5 ベースの RTSP サーバー（server.go）、認証の純粋関数（auth.go）、統計（stats.go）
   onvif/                   SOAP ディスパッチ (server.go)、Device/Media ハンドラ、PTZ 状態機械 (ptz.go)、WS-Discovery
-  web/                     HTTP サーバー (server.go)、REST/WS ハンドラ (api.go)、埋め込み UI (static/index.html)
+  timesignal/              117 時報の音声生成（phrase / tones / pcm / tts / service に分割、Runner・Synthesizer で外部プロセスを抽象化）
+  licenses/                サードパーティ帰属表示の単一情報源（/api/licenses と README に反映）
+  web/                     HTTP サーバー (server.go)、REST/WS ハンドラ (api_*.go)、埋め込み UI (static/index.html)
 docs/                      REST API 仕様・ONVIF Profile S 仕様（日本語）
-.github/workflows/ci.yml   go vet → go test → Docker multi-arch ビルド & ghcr.io push
-Dockerfile / compose.yml   alpine + ffmpeg ランタイム
+.agents/skills/            ワークスペーススキル（リリース手順、FFmpeg パイプライン、Web UI i18n）
+.github/workflows/ci.yml   gofmt → go vet → go mod tidy → govulncheck → go test -race → Docker multi-arch ビルド & ghcr.io push
+Dockerfile / compose.yml   alpine 3.22 + ffmpeg + Open JTalk + espeak-ng ランタイム
 ```
 
 - Go モジュール名は `mockcam`（`import "mockcam/internal/..."`）。
-- 外部依存は `gortsplib/v4`、`pion/rtp`・`pion/rtcp`、`gorilla/websocket`、`google/uuid` のみ。**新しい依存を追加する前に標準ライブラリで代替できないか検討**してください。
+- 外部依存は `gortsplib/v5`、`pion/rtp`・`pion/rtcp`、`gorilla/websocket`、`google/uuid` のみ。**新しい依存を追加する前に標準ライブラリで代替できないか検討**し、追加した場合は `internal/licenses/licenses.go` にも登録してください（`licenses_test.go` が go.mod と突き合わせます）。
 - フロントエンドは `internal/web/static/index.html` 1 ファイル（Tailwind CDN + Alpine.js）。ビルドステップは無く、`go:embed` でバイナリに同梱されます。
 
 ## 3. 開発コマンド
@@ -43,13 +47,20 @@ Dockerfile / compose.yml   alpine + ffmpeg ランタイム
 go mod download
 go build -o mockcam ./cmd/mockcam        # ビルド
 go run ./cmd/mockcam -config ./config/settings.json   # ローカル起動（FFmpeg が PATH に必要）
+gofmt -l .                               # 未整形ファイルの一覧（CI では出力があると失敗）
 go vet ./...                             # CI と同じ静的検査
-go test ./...                            # 単体テスト（FFmpeg 不要）
-gofmt -l .                               # 未整形ファイルの一覧
+go mod tidy                              # CI では go.mod/go.sum に差分が出ると失敗
+govulncheck ./...                        # 脆弱性スキャン（go install golang.org/x/vuln/cmd/govulncheck@latest）
+go test -race -count=1 ./...             # 単体テスト（FFmpeg 不要。Windows で -race が使えない場合は外す）
 docker compose up -d --build             # コンテナ起動
 ```
 
-- **テストは FFmpeg 無しで動く**よう設計されています（`BuildFFmpegArgs` は純粋関数、Web テストは supervisor/rtsp に `nil` を渡す）。この性質を壊さないでください。
+- **テストは FFmpeg 無しで動く**よう設計されています。各層は依存を注入できる形になっており、この性質を壊さないでください。
+  - `supervisor`: `WithCommandFactory` でプロセス生成を差し替え（テストはテストバイナリ自身をフェイク FFmpeg として再実行）。
+  - `timesignal`: `Runner`（外部コマンド）と `Synthesizer`（TTS）をインターフェース化。`NewServiceWith(synth, clock)` で時刻も注入可能。
+  - `web`: `StreamSupervisor` / `StreamServer` / `PTZ` インターフェースを受け取る。`newAPIHandler` でロガー・時報サービスも差し替え可能。
+  - `rtsp`: `authorizeRequest` は純粋関数。`CredentialValidator` インターフェースで認証器を差し替え。
+  - `onvif`: `BuildProbeMatches` / `IsProbe` / `ProbeMessageID` は純粋関数。SOAP は `httptest` で検証。
 - 設定ファイルの既定パス: Linux は `/config/settings.json`、Windows は `./config/settings.json`、環境変数 `CONFIG_PATH` または `-config` フラグで上書き。存在しなければデフォルト設定が自動生成されます。
 - 既定の認証情報は `admin` / `admin1234`（`config.DefaultConfig()`）。
 
@@ -60,15 +71,25 @@ docker compose up -d --build             # コンテナ起動
 - 変更は必ず `UpdateProfile` / `UpdateServerConfig` / `UpdatePTZ` / `AddProfile` / `DeleteProfile` などのメソッド経由で行い、各メソッドが即座に `settings.json` へ永続化します。
 - 設定項目を追加する場合は `types.go` の構造体タグ、`DefaultConfig()`、`README.md` の設定表、`docs/rest_api.md` を揃えて更新してください。
 - `video.quality` と `ptz.speed` は型定義・UI には存在しますが、現在 `BuildFFmpegArgs` / `PTZController` では参照されていません（予約項目）。
+- 設定ファイル読み込み時に `FirmwareVersion` は `config.AppVersion` に同期されます。リリース時は `.agents/skills/mockcam-release-and-verify/SKILL.md` のチェックリストに従ってください。
 
 ### FFmpeg ワーカー (`supervisor`)
-- プロファイル 1 つにつきワーカー goroutine 1 つ。FFmpeg が落ちたら 1 秒後に自動再起動します。
+- プロファイル 1 つにつきワーカー goroutine 1 つ。FFmpeg が落ちたら `restartDelay`（既定 1 秒）後に自動再起動し、`Status()` の `Restarts` が増えます。
 - ホットリロードは `RestartProfile(token)` で **該当プロファイルのみ**停止→再起動します。他プロファイルを止めないでください。
-- 停止手順は `stopWorker`: `SIGTERM` → 短いタイムアウト → `Kill`。Windows では `SIGTERM` が効かず `Kill` にフォールバックします。
-- FFmpeg 引数の変更は `BuildFFmpegArgs` に閉じ込め、`supervisor_test.go` に期待引数のアサーションを追加してください。
+- 停止手順は `stopWorker`: `SIGTERM` → `stopGrace` → `Kill` → `killGrace`。Windows では `SIGTERM` が効かず `Kill` にフォールバックします。
+- FFmpeg 引数の変更は `BuildFFmpegArgs` に閉じ込め、`supervisor_test.go` に期待引数のアサーションを追加してください。時報 PCM のサンプルレートは `timesignal.SampleRate` を参照し、数値をハードコードしないでください。
+- プロセス生命周期のテストは `lifecycle_test.go` のヘルパープロセスパターンを踏襲してください。
+
+### 117 時報 (`timesignal`)
+- Open JTalk は **モデルのネイティブ 48 kHz** で合成します。`-s` / `-a` / `-fm` を渡すとフォルマントが歪み不気味な声になるため、`OpenJTalk.Args` に追加しないでください（テストで禁止フラグを検査しています）。
+- 時報音は 880 Hz に統一（`:07 :08 :09` ピップ、`:00` マーク）。エンベロープはレイズドコサインでクリック音を出さないこと。`tones_test.go` が周波数・無音区間・クリックを検証します。
+- スケジュールは `AnnouncementFor(now)` が決めます。`Streamer.Chunk(ctx, now, dst)` は時刻を引数に取る決定的な関数なので、テストでは固定時刻を渡してください。
+- WAV は必ず `ParseWAV` でチャンクを走査して読むこと（先頭 44 バイト決め打ちは LIST/fact チャンクで壊れます）。
 
 ### RTSP (`rtsp.Server`)
-- publish 元は自プロセス内 FFmpeg のみを想定しており、**ループバックからの ANNOUNCE は認証免除**です（`checkAuth`）。この例外を外部アドレスへ広げないでください。
+- gortsplib は **v5** を使用します（v4 は deprecated スタブ）。`ServerStream` は `&gortsplib.ServerStream{Server, Desc}` + `Initialize()` で生成します。
+- publish 元は自プロセス内 FFmpeg のみを想定しており、**ループバックからの ANNOUNCE は認証免除**です（`authorizeRequest`）。この例外を外部アドレスへ広げないでください。
+- publisher セッションが切れたらそのストリームを閉じ、reader に再接続させます（`OnSessionClose`）。
 - パスは `/live/<token>` で、`normalizePath` が `live/` プレフィックスを剥がして `streams[token]` を引きます。プロファイルの `token` と RTSP パスは常に一致させます。
 - reader 数・パケット数・ビットレートは `atomic` と `GetStats()` で集計され、`/api/status` と WebSocket へ流れます。
 
@@ -79,8 +100,10 @@ docker compose up -d --build             # コンテナ起動
 - PTZ は `PTZController` がメモリ上の仮想座標（pan/tilt: -1.0〜1.0、zoom: 0.0〜1.0）を保持し、変更時にリスナー通知と設定永続化を非同期で行います。座標は必ず `clamp` してください。
 
 ### Web / API (`web`)
-- ルート登録は `APIHandler.RegisterRoutes`（REST / WS）と `onvif.Server.RegisterRoutes`（SOAP）の 2 箇所。`/` は埋め込み静的ファイル。
-- エンドポイントを追加・変更したら `docs/rest_api.md` と `index.html` 側の呼び出しを同時に更新してください。
+- ルート登録は `APIHandler.RegisterRoutes`（REST / WS）と `onvif.Server.RegisterRoutes`（SOAP）の 2 箇所。`/` は埋め込み静的ファイル。ハンドラは `api_status.go` / `api_profiles.go` / `api_ptz.go` / `api_media.go` / `api_ws.go` に分かれています。
+- JSON ボディは `readJSON`（1 MiB 上限・未知フィールド拒否）で読み、書き込みは `writeJSON` / `writeError` を使います。プロファイルとサーバー設定は保存前に `config.ValidateProfile` / `config.ValidateServer` を通してください。
+- エンドポイントを追加・変更したら `docs/rest_api.md`、`web_test.go`、`index.html` 側の呼び出しを同時に更新してください。
+- 依存ライブラリやランタイムツールを追加したら `internal/licenses/licenses.go` に帰属情報を追加し、README のライセンス表も更新してください（UI の「ℹ️ 情報」モーダルは `/api/licenses` を表示します）。
 - WebSocket は PTZ 座標・ステータス・ログをサーバー push し、クライアントからの PTZ 操作を受け付けます。
 
 ### ログ
@@ -99,14 +122,16 @@ docker compose up -d --build             # コンテナ起動
 
 ## 6. 変更時に確認すること
 
-1. `go vet ./...` と `go test ./...` が通る。
+1. `gofmt -l .` が空、`go vet ./...`、`go mod tidy`（差分なし）、`govulncheck ./...`、`go test -race ./...` が通る。
 2. 設定スキーマ・API・ONVIF アクションを変更した場合、対応するドキュメント（`README.md` / `docs/`）と `index.html` を更新した。
 3. ホットリロード・graceful shutdown（`main.go` の teardown 順序）を壊していない。
 4. 1,000 接続以上のスケールを前提としているため、リクエスト経路やパケット転送経路にロック競合やアロケーションを増やしていない。
 5. 認証免除の範囲（ループバック publish、ONVIF の一部アクション）を広げていない。
+6. 依存追加・更新時は `internal/licenses` と README のライセンス表を更新した。
 
 ## 7. 既知の注意点
 
 - README のバッジ・イメージ名 `your-org/mockcam` はプレースホルダーです。
 - Windows ではマルチキャスト待受 (`WS-Discovery`) が失敗することがありますが、警告のみで起動は継続します。
+- Windows のローカル環境では `go test -race` が MinGW gcc の警告で失敗することがあります。その場合は `-race` なしで実行し、race 検査は CI（Linux）に任せてください。
 - `internal/web/static/index.html` は CDN（Tailwind / Alpine.js）に依存するため、オフライン環境では UI のスタイルが崩れます。

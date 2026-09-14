@@ -1,3 +1,6 @@
+// Package supervisor runs one FFmpeg subprocess per stream profile, restarts
+// it when it dies, and hot-reloads individual profiles on configuration
+// changes without disturbing the others.
 package supervisor
 
 import (
@@ -6,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -14,73 +18,128 @@ import (
 	"mockcam/internal/config"
 )
 
+// CommandFactory creates the process for one FFmpeg invocation. It exists so
+// tests can substitute a harmless helper process for the real binary.
+type CommandFactory func(ctx context.Context, name string, args ...string) *exec.Cmd
+
+// Option customises a Supervisor.
+type Option func(*Supervisor)
+
+// WithCommandFactory overrides how worker processes are spawned.
+func WithCommandFactory(f CommandFactory) Option {
+	return func(s *Supervisor) { s.newCommand = f }
+}
+
+// WithBinary overrides the FFmpeg executable name/path.
+func WithBinary(name string) Option {
+	return func(s *Supervisor) { s.binary = name }
+}
+
+// WithTimings overrides the restart/stop delays (mainly to speed up tests).
+func WithTimings(restartDelay, startFailDelay, stopGrace, killGrace time.Duration) Option {
+	return func(s *Supervisor) {
+		s.restartDelay = restartDelay
+		s.startFailDelay = startFailDelay
+		s.stopGrace = stopGrace
+		s.killGrace = killGrace
+	}
+}
+
+// WorkerStatus is a read-only view of one worker for diagnostics.
+type WorkerStatus struct {
+	Token    string `json:"token"`
+	Running  bool   `json:"running"`
+	Restarts int    `json:"restarts"`
+	PID      int    `json:"pid,omitempty"`
+}
+
 type profileWorker struct {
-	token      string
-	profile    config.ProfileConfig
-	cmd        *exec.Cmd
-	cancel     context.CancelFunc
-	stopping   bool
-	workerDone chan struct{}
-	mu         sync.Mutex
+	token   string
+	profile config.ProfileConfig
+	cancel  context.CancelFunc
+	done    chan struct{}
+
+	mu       sync.Mutex
+	cmd      *exec.Cmd
+	stopping bool
+	restarts int
 }
 
 // Supervisor manages FFmpeg subprocesses for all configured profiles.
 type Supervisor struct {
-	cfgMgr  *config.Manager
-	workers map[string]*profileWorker
+	cfgMgr     *config.Manager
+	newCommand CommandFactory
+	binary     string
+
+	restartDelay   time.Duration
+	startFailDelay time.Duration
+	stopGrace      time.Duration
+	killGrace      time.Duration
+
 	mu      sync.Mutex
+	workers map[string]*profileWorker
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 }
 
-// NewSupervisor creates a new Supervisor instance.
-func NewSupervisor(cfgMgr *config.Manager) *Supervisor {
+// NewSupervisor creates a Supervisor. Without options it spawns "ffmpeg"
+// from PATH with production timings.
+func NewSupervisor(cfgMgr *config.Manager, opts ...Option) *Supervisor {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Supervisor{
-		cfgMgr:  cfgMgr,
-		workers: make(map[string]*profileWorker),
-		ctx:     ctx,
-		cancel:  cancel,
+	s := &Supervisor{
+		cfgMgr:         cfgMgr,
+		newCommand:     exec.CommandContext,
+		binary:         "ffmpeg",
+		restartDelay:   1 * time.Second,
+		startFailDelay: 2 * time.Second,
+		stopGrace:      300 * time.Millisecond,
+		killGrace:      500 * time.Millisecond,
+		workers:        make(map[string]*profileWorker),
+		ctx:            ctx,
+		cancel:         cancel,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
-// Start launches FFmpeg workers for all profiles.
+// Start launches FFmpeg workers for all configured profiles.
 func (s *Supervisor) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	cfg := s.cfgMgr.Get()
 	for _, p := range cfg.Profiles {
-		s.startWorkerLocked(p, cfg.Server.RTSPPort)
+		s.startWorkerLocked(p, cfg.Server.RTSPPort, cfg.Server.HTTPPort)
 	}
 	return nil
 }
 
-func (s *Supervisor) startWorkerLocked(profile config.ProfileConfig, rtspPort int) {
+func (s *Supervisor) startWorkerLocked(profile config.ProfileConfig, rtspPort, httpPort int) {
 	workerCtx, workerCancel := context.WithCancel(s.ctx)
 	w := &profileWorker{
-		token:      profile.Token,
-		profile:    profile,
-		cancel:     workerCancel,
-		workerDone: make(chan struct{}),
+		token:   profile.Token,
+		profile: profile,
+		cancel:  workerCancel,
+		done:    make(chan struct{}),
 	}
 	s.workers[profile.Token] = w
 
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		defer close(w.workerDone)
-		s.runWorkerLoop(workerCtx, w, rtspPort)
+		defer close(w.done)
+		s.runWorkerLoop(workerCtx, w, rtspPort, httpPort)
 	}()
 }
 
-func (s *Supervisor) runWorkerLoop(ctx context.Context, w *profileWorker, rtspPort int) {
-	for {
-		select {
-		case <-ctx.Done():
+// runWorkerLoop keeps one FFmpeg process alive until the worker is stopped.
+func (s *Supervisor) runWorkerLoop(ctx context.Context, w *profileWorker, rtspPort, httpPort int) {
+	for attempt := 0; ; attempt++ {
+		if ctx.Err() != nil {
 			return
-		default:
 		}
 
 		w.mu.Lock()
@@ -88,59 +147,48 @@ func (s *Supervisor) runWorkerLoop(ctx context.Context, w *profileWorker, rtspPo
 			w.mu.Unlock()
 			return
 		}
-
-		httpPort := s.cfgMgr.Get().Server.HTTPPort
 		args := BuildFFmpegArgs(w.profile, rtspPort, httpPort)
-		cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+		cmd := s.newCommand(ctx, s.binary, args...)
 		var stderrBuf bytes.Buffer
 		cmd.Stdout = nil
 		cmd.Stderr = &stderrBuf
 		w.cmd = cmd
+		if attempt > 0 {
+			w.restarts++
+		}
 		w.mu.Unlock()
 
 		log.Printf("[supervisor] Starting FFmpeg for profile '%s'...", w.token)
-		err := cmd.Start()
-		if err != nil {
+		if err := cmd.Start(); err != nil {
 			log.Printf("[supervisor] Failed to start FFmpeg for profile '%s': %v", w.token, err)
-			select {
-			case <-ctx.Done():
+			w.mu.Lock()
+			w.cmd = nil
+			w.mu.Unlock()
+			if !sleepCtx(ctx, s.startFailDelay) {
 				return
-			case <-time.After(2 * time.Second):
-				continue
 			}
+			continue
 		}
 
-		// Wait for process completion
 		waitErr := cmd.Wait()
 
 		w.mu.Lock()
 		stopping := w.stopping
 		w.cmd = nil
 		w.mu.Unlock()
-
-		if stopping {
+		if stopping || ctx.Err() != nil {
 			return
 		}
 
-		stderrMsg := strings.TrimSpace(stderrBuf.String())
-		if len(stderrMsg) > 500 {
-			stderrMsg = stderrMsg[len(stderrMsg)-500:]
-		}
-
-		select {
-		case <-ctx.Done():
+		log.Printf("[supervisor] FFmpeg exited for profile '%s' (%v): %s, restarting...",
+			w.token, exitDescription(waitErr), tailOf(stderrBuf.String(), 500))
+		if !sleepCtx(ctx, s.restartDelay) {
 			return
-		case <-time.After(1 * time.Second):
-			if waitErr != nil {
-				log.Printf("[supervisor] FFmpeg exited for profile '%s' (err: %v): %s, restarting...", w.token, waitErr, stderrMsg)
-			} else {
-				log.Printf("[supervisor] FFmpeg completed unexpectedly for profile '%s' (stderr: %s), restarting...", w.token, stderrMsg)
-			}
 		}
 	}
 }
 
-// RestartProfile hot-reloads a single profile with new configuration.
+// RestartProfile hot-reloads a single profile with its current configuration.
 func (s *Supervisor) RestartProfile(token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -149,58 +197,53 @@ func (s *Supervisor) RestartProfile(token string) error {
 	if !ok {
 		return fmt.Errorf("profile '%s' not found", token)
 	}
-	rtspPort := s.cfgMgr.Get().Server.RTSPPort
+	cfg := s.cfgMgr.Get()
 
-	if oldWorker, exists := s.workers[token]; exists {
-		s.stopWorker(oldWorker)
+	if old, exists := s.workers[token]; exists {
+		s.stopWorker(old)
 		delete(s.workers, token)
 	}
 
-	s.startWorkerLocked(prof, rtspPort)
+	s.startWorkerLocked(prof, cfg.Server.RTSPPort, cfg.Server.HTTPPort)
 	log.Printf("[supervisor] Profile '%s' restarted with updated config", token)
 	return nil
 }
 
-// StopProfile stops an FFmpeg worker for a deleted profile.
+// StopProfile stops the FFmpeg worker of a (deleted) profile.
 func (s *Supervisor) StopProfile(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if oldWorker, exists := s.workers[token]; exists {
-		s.stopWorker(oldWorker)
+	if old, exists := s.workers[token]; exists {
+		s.stopWorker(old)
 		delete(s.workers, token)
 		log.Printf("[supervisor] Profile '%s' stopped", token)
 	}
 }
 
+// stopWorker asks the process to terminate (SIGTERM), then kills it if it
+// does not exit within stopGrace, and finally waits for the worker goroutine.
 func (s *Supervisor) stopWorker(w *profileWorker) {
 	w.mu.Lock()
 	w.stopping = true
 	cmd := w.cmd
-	w.cancel()
 	w.mu.Unlock()
+	w.cancel()
 
 	if cmd != nil && cmd.Process != nil {
-		// Send SIGTERM where supported
-		_ = cmd.Process.Signal(syscall.SIGTERM)
+		_ = cmd.Process.Signal(syscall.SIGTERM) // no-op on Windows; Kill follows
+		select {
+		case <-w.done:
+			return
+		case <-time.After(s.stopGrace):
+			_ = cmd.Process.Kill()
+		}
+	}
 
-		// Wait briefly for clean exit, otherwise Kill immediately
-		select {
-		case <-w.workerDone:
-		case <-time.After(300 * time.Millisecond):
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-			}
-			select {
-			case <-w.workerDone:
-			case <-time.After(500 * time.Millisecond):
-			}
-		}
-	} else {
-		select {
-		case <-w.workerDone:
-		case <-time.After(300 * time.Millisecond):
-		}
+	select {
+	case <-w.done:
+	case <-time.After(s.killGrace):
+		log.Printf("[supervisor] Worker '%s' did not exit in time", w.token)
 	}
 }
 
@@ -217,4 +260,59 @@ func (s *Supervisor) StopAll() {
 
 	s.wg.Wait()
 	log.Println("[supervisor] All FFmpeg workers stopped")
+}
+
+// Status returns a snapshot of every worker, sorted by token.
+func (s *Supervisor) Status() []WorkerStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make([]WorkerStatus, 0, len(s.workers))
+	for _, w := range s.workers {
+		w.mu.Lock()
+		st := WorkerStatus{Token: w.token, Restarts: w.restarts}
+		if w.cmd != nil && w.cmd.Process != nil {
+			st.Running = true
+			st.PID = w.cmd.Process.Pid
+		}
+		w.mu.Unlock()
+		out = append(out, st)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Token < out[j].Token })
+	return out
+}
+
+// RunningTokens returns the tokens of workers that currently exist.
+func (s *Supervisor) RunningTokens() []string {
+	status := s.Status()
+	tokens := make([]string, 0, len(status))
+	for _, st := range status {
+		tokens = append(tokens, st.Token)
+	}
+	return tokens
+}
+
+// sleepCtx waits for d and reports false when ctx was cancelled first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
+}
+
+func exitDescription(err error) string {
+	if err == nil {
+		return "exit 0"
+	}
+	return err.Error()
+}
+
+func tailOf(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > n {
+		return s[len(s)-n:]
+	}
+	return s
 }

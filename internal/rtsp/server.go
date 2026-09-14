@@ -1,44 +1,28 @@
+// Package rtsp implements the RTSP server that receives streams published by
+// the internal FFmpeg workers and fans them out to any number of readers.
 package rtsp
 
 import (
-	"encoding/base64"
 	"fmt"
 	"log"
 	"net"
 	"strings"
 	"sync"
-	"sync/atomic"
+	"time"
 
-	"github.com/bluenviron/gortsplib/v4"
-	"github.com/bluenviron/gortsplib/v4/pkg/base"
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
-	"github.com/bluenviron/gortsplib/v4/pkg/format"
+	"github.com/bluenviron/gortsplib/v5"
+	"github.com/bluenviron/gortsplib/v5/pkg/base"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
-
-	"mockcam/internal/auth"
-	"time"
 
 	"mockcam/internal/config"
 	"mockcam/internal/logger"
 )
 
-// ClientInfo represents an active RTSP consumer.
-type ClientInfo struct {
-	ID        string `json:"id"`
-	RemoteIP  string `json:"remote_ip"`
-	Path      string `json:"path"`
-	Transport string `json:"transport"`
-	Duration  int64  `json:"duration_seconds"`
-}
-
-// StreamStats tracks packet and bandwidth statistics per profile.
-type StreamStats struct {
-	PacketsSent   int64   `json:"packets_sent"`
-	BytesSent     int64   `json:"bytes_sent"`
-	BitrateKbps   float64 `json:"bitrate_kbps"`
-	ActiveReaders int     `json:"active_readers"`
-}
+// pathPrefix is the URL prefix under which every profile stream is exposed.
+const pathPrefix = "live/"
 
 type clientSessionRecord struct {
 	id        string
@@ -49,62 +33,65 @@ type clientSessionRecord struct {
 
 // Server handles RTSP streaming and fanout.
 type Server struct {
-	cfgMgr       *config.Manager
-	auth         *auth.Authenticator
-	rtspServer   *gortsplib.Server
-	streams      map[string]*gortsplib.ServerStream
-	mu           sync.RWMutex
-	clientCount  atomic.Int64
-	sessionPaths map[*gortsplib.ServerSession]string
-	sessions     map[*gortsplib.ServerSession]*clientSessionRecord
-	packetsSent  atomic.Int64
-	bytesSent    atomic.Int64
-	lastBytes    int64
-	lastStatTime time.Time
-	currentKbps  atomic.Int64
+	cfgMgr     *config.Manager
+	auth       CredentialValidator
+	rtspServer *gortsplib.Server
+	meter      *throughputMeter
+	now        func() time.Time
+
+	mu          sync.RWMutex
+	streams     map[string]*gortsplib.ServerStream
+	publishers  map[*gortsplib.ServerSession]string
+	readers     map[*gortsplib.ServerSession]*clientSessionRecord
+	connCount   int64
+	readerSeq   int64
+	writeQueue  int
+	rtspAddress string
 }
 
 // NewServer creates a new RTSP server.
-func NewServer(cfgMgr *config.Manager, authenticator *auth.Authenticator) *Server {
-	s := &Server{
-		cfgMgr:       cfgMgr,
-		auth:         authenticator,
-		streams:      make(map[string]*gortsplib.ServerStream),
-		sessionPaths: make(map[*gortsplib.ServerSession]string),
-		sessions:     make(map[*gortsplib.ServerSession]*clientSessionRecord),
-		lastStatTime: time.Now(),
+func NewServer(cfgMgr *config.Manager, authenticator CredentialValidator) *Server {
+	now := time.Now
+	return &Server{
+		cfgMgr:     cfgMgr,
+		auth:       authenticator,
+		meter:      newThroughputMeter(now()),
+		now:        now,
+		streams:    make(map[string]*gortsplib.ServerStream),
+		publishers: make(map[*gortsplib.ServerSession]string),
+		readers:    make(map[*gortsplib.ServerSession]*clientSessionRecord),
+		writeQueue: 8192,
 	}
-	return s
 }
 
-// Start launches the RTSP server.
+// Start launches the RTSP server on the configured port.
 func (s *Server) Start() error {
 	cfg := s.cfgMgr.Get()
 	port := cfg.Server.RTSPPort
 	if port <= 0 {
 		port = 8554
 	}
+	s.rtspAddress = fmt.Sprintf(":%d", port)
 
 	s.rtspServer = &gortsplib.Server{
 		Handler:                  s,
-		RTSPAddress:              fmt.Sprintf(":%d", port),
-		WriteQueueSize:           8192,
+		RTSPAddress:              s.rtspAddress,
+		WriteQueueSize:           s.writeQueue,
 		DisableRTCPSenderReports: true,
 	}
 
-	log.Printf("[rtsp] Starting RTSP server on :%d...", port)
+	log.Printf("[rtsp] Starting RTSP server on %s...", s.rtspAddress)
 	return s.rtspServer.Start()
 }
 
-// Close gracefully closes the RTSP server and streams.
+// Close gracefully closes the RTSP server and all streams.
 func (s *Server) Close() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	for _, stream := range s.streams {
 		stream.Close()
 	}
 	s.streams = make(map[string]*gortsplib.ServerStream)
+	s.mu.Unlock()
 
 	if s.rtspServer != nil {
 		s.rtspServer.Close()
@@ -112,15 +99,30 @@ func (s *Server) Close() {
 	log.Println("[rtsp] RTSP server closed")
 }
 
-// GetClientCount returns the number of active RTSP client sessions.
+// GetClientCount returns the number of open RTSP TCP connections.
 func (s *Server) GetClientCount() int64 {
-	return s.clientCount.Load()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.connCount
 }
 
+// StreamTokens returns the tokens that currently have an active publisher.
+func (s *Server) StreamTokens() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tokens := make([]string, 0, len(s.streams))
+	for t := range s.streams {
+		tokens = append(tokens, t)
+	}
+	return tokens
+}
+
+// normalizePath maps an RTSP request path ("/live/Profile_1") to a profile token.
 func normalizePath(p string) string {
-	return strings.TrimPrefix(strings.TrimPrefix(p, "/"), "live/")
+	return strings.TrimPrefix(strings.TrimPrefix(p, "/"), pathPrefix)
 }
 
+// isLoopback reports whether the remote address belongs to a loopback interface.
 func isLoopback(remoteAddr string) bool {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
@@ -130,88 +132,68 @@ func isLoopback(remoteAddr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func (s *Server) checkAuth(req *base.Request, isPublish bool, remoteAddr string) *base.Response {
-	// Allow unauthenticated publish from loopback (internal FFmpeg)
-	if isPublish && isLoopback(remoteAddr) {
-		return nil
+func remoteAddrOf(conn *gortsplib.ServerConn) string {
+	if conn == nil || conn.NetConn() == nil {
+		return ""
 	}
-
-	cfg := s.cfgMgr.Get()
-	if !auth.IsAuthEnabled(cfg.Server.AuthType) {
-		return nil
-	}
-
-	authHeaders := req.Header["Authorization"]
-	if len(authHeaders) == 0 {
-		return s.makeUnauthorizedResponse()
-	}
-
-	authHeader := authHeaders[0]
-	if strings.HasPrefix(strings.ToLower(authHeader), "basic ") {
-		payload := strings.TrimSpace(authHeader[6:])
-		decoded, err := base64.StdEncoding.DecodeString(payload)
-		if err != nil || !s.auth.ValidateBasicCredentials(strings.Split(string(decoded), ":")[0], strings.Split(string(decoded), ":")[1]) {
-			return s.makeUnauthorizedResponse()
-		}
-		return nil
-	}
-
-	if strings.HasPrefix(strings.ToLower(authHeader), "digest ") {
-		params := auth.ParseDigestAuthorization(authHeader)
-		if !s.auth.DigestManager().ValidateDigest(string(req.Method), params, cfg.Server.AuthUser, cfg.Server.AuthPass) {
-			return s.makeUnauthorizedResponse()
-		}
-		return nil
-	}
-
-	return s.makeUnauthorizedResponse()
+	return conn.NetConn().RemoteAddr().String()
 }
 
-func (s *Server) makeUnauthorizedResponse() *base.Response {
-	cfg := s.cfgMgr.Get()
-	var authVal string
-	if cfg.Server.AuthType == "basic" {
-		authVal = fmt.Sprintf(`Basic realm="%s"`, s.auth.Realm())
-	} else {
-		authVal = s.auth.DigestManager().ChallengeHeader()
+func remoteHostOf(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
 	}
+	return addr
+}
 
-	return &base.Response{
-		StatusCode: base.StatusUnauthorized,
-		Header: base.Header{
-			"WWW-Authenticate": base.HeaderValue{authVal},
-		},
-	}
+func (s *Server) checkAuth(req *base.Request, isPublish bool, remoteAddr string) *base.Response {
+	cfg := s.cfgMgr.Get()
+	return authorizeRequest(req, isPublish, remoteAddr, cfg.Server.AuthType, cfg.Server.AuthUser, cfg.Server.AuthPass, s.auth)
 }
 
 // OnConnOpen is called when a client TCP connection is opened.
 func (s *Server) OnConnOpen(ctx *gortsplib.ServerHandlerOnConnOpenCtx) {
-	s.clientCount.Add(1)
+	s.mu.Lock()
+	s.connCount++
+	s.mu.Unlock()
 }
 
 // OnConnClose is called when a client TCP connection is closed.
 func (s *Server) OnConnClose(ctx *gortsplib.ServerHandlerOnConnCloseCtx) {
-	s.clientCount.Add(-1)
+	s.mu.Lock()
+	s.connCount--
+	s.mu.Unlock()
 }
 
 // OnSessionOpen is called when a session is opened.
 func (s *Server) OnSessionOpen(ctx *gortsplib.ServerHandlerOnSessionOpenCtx) {}
 
-// OnSessionClose is called when a session is closed.
+// OnSessionClose is called when a session is closed. Reader sessions are
+// removed from the client list; when a publisher disappears its stream is
+// closed so that readers reconnect instead of waiting on a dead stream.
 func (s *Server) OnSessionClose(ctx *gortsplib.ServerHandlerOnSessionCloseCtx) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if rec, ok := s.sessions[ctx.Session]; ok {
+
+	if rec, ok := s.readers[ctx.Session]; ok {
 		logger.Infof("rtsp", "Client disconnected: %s from %s (viewed %s for %ds)",
-			rec.id, rec.remoteIP, rec.path, int64(time.Since(rec.startTime).Seconds()))
-		delete(s.sessions, ctx.Session)
+			rec.id, rec.remoteIP, rec.path, int64(s.now().Sub(rec.startTime).Seconds()))
+		delete(s.readers, ctx.Session)
 	}
-	delete(s.sessionPaths, ctx.Session)
+
+	if token, ok := s.publishers[ctx.Session]; ok {
+		delete(s.publishers, ctx.Session)
+		if stream, exists := s.streams[token]; exists {
+			stream.Close()
+			delete(s.streams, token)
+			logger.Warnf("rtsp", "Publisher disconnected, stream closed: token='%s'", token)
+		}
+	}
 }
 
 // OnDescribe is called when receiving a DESCRIBE request.
 func (s *Server) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
-	remoteAddr := ctx.Conn.NetConn().RemoteAddr().String()
+	remoteAddr := remoteAddrOf(ctx.Conn)
 	if resp := s.checkAuth(ctx.Request, false, remoteAddr); resp != nil {
 		logger.Warnf("rtsp", "Unauthorized DESCRIBE from %s for path '%s'", remoteAddr, ctx.Path)
 		return resp, nil, nil
@@ -225,25 +207,31 @@ func (s *Server) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (*base.Re
 	if !exists {
 		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
 	}
-
 	return &base.Response{StatusCode: base.StatusOK}, stream, nil
 }
 
 // OnAnnounce is called when a publisher announces a stream.
 func (s *Server) OnAnnounce(ctx *gortsplib.ServerHandlerOnAnnounceCtx) (*base.Response, error) {
-	if resp := s.checkAuth(ctx.Request, true, ctx.Conn.NetConn().RemoteAddr().String()); resp != nil {
+	if resp := s.checkAuth(ctx.Request, true, remoteAddrOf(ctx.Conn)); resp != nil {
 		return resp, nil
 	}
 
 	token := normalizePath(ctx.Path)
-	stream := gortsplib.NewServerStream(s.rtspServer, ctx.Description)
+	stream := &gortsplib.ServerStream{
+		Server: s.rtspServer,
+		Desc:   ctx.Description,
+	}
+	if err := stream.Initialize(); err != nil {
+		logger.Errorf("rtsp", "Failed to initialize stream for token='%s': %v", token, err)
+		return &base.Response{StatusCode: base.StatusInternalServerError}, nil
+	}
 
 	s.mu.Lock()
 	if old, exists := s.streams[token]; exists {
 		old.Close()
 	}
 	s.streams[token] = stream
-	s.sessionPaths[ctx.Session] = token
+	s.publishers[ctx.Session] = token
 	s.mu.Unlock()
 
 	logger.Infof("rtsp", "Stream announced: token='%s'", token)
@@ -252,48 +240,47 @@ func (s *Server) OnAnnounce(ctx *gortsplib.ServerHandlerOnAnnounceCtx) (*base.Re
 
 // OnSetup is called when a client sets up a track.
 func (s *Server) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*base.Response, *gortsplib.ServerStream, error) {
-	token := normalizePath(ctx.Path)
-
-	s.mu.RLock()
-	stream, exists := s.streams[token]
-	s.mu.RUnlock()
-
-	// If publisher session, return OK without stream
+	// Publishers SETUP their own tracks; no stream is attached on that side.
 	if ctx.Session.State() == gortsplib.ServerSessionStatePreRecord {
 		return &base.Response{StatusCode: base.StatusOK}, nil, nil
 	}
 
+	token := normalizePath(ctx.Path)
+	s.mu.RLock()
+	stream, exists := s.streams[token]
+	s.mu.RUnlock()
+
 	if !exists {
 		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
 	}
-
 	return &base.Response{StatusCode: base.StatusOK}, stream, nil
 }
 
 // OnPlay is called when a reader starts playing.
 func (s *Server) OnPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
-	remoteAddr := ctx.Path
-	if ctx.Session != nil {
-		s.mu.Lock()
-		token := normalizePath(ctx.Path)
-		rec := &clientSessionRecord{
-			id:        fmt.Sprintf("sess-%d", time.Now().UnixNano()%100000),
-			remoteIP:  ctx.Path,
-			path:      token,
-			startTime: time.Now(),
-		}
-		s.sessions[ctx.Session] = rec
-		s.mu.Unlock()
-		logger.Infof("rtsp", "Client started PLAY: stream='%s' (Active readers: %d)", token, len(s.sessions))
+	token := normalizePath(ctx.Path)
+	remoteIP := remoteHostOf(remoteAddrOf(ctx.Conn))
+
+	s.mu.Lock()
+	s.readerSeq++
+	rec := &clientSessionRecord{
+		id:        fmt.Sprintf("sess-%d", s.readerSeq),
+		remoteIP:  remoteIP,
+		path:      token,
+		startTime: s.now(),
 	}
-	_ = remoteAddr
+	s.readers[ctx.Session] = rec
+	active := len(s.readers)
+	s.mu.Unlock()
+
+	logger.Infof("rtsp", "Client started PLAY: stream='%s' from %s (Active readers: %d)", token, remoteIP, active)
 	return &base.Response{StatusCode: base.StatusOK}, nil
 }
 
 // OnRecord is called when a publisher starts publishing.
 func (s *Server) OnRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.Response, error) {
 	s.mu.RLock()
-	token := s.sessionPaths[ctx.Session]
+	token := s.publishers[ctx.Session]
 	stream := s.streams[token]
 	s.mu.RUnlock()
 
@@ -301,13 +288,10 @@ func (s *Server) OnRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.Respon
 		return &base.Response{StatusCode: base.StatusBadRequest}, nil
 	}
 
-	ctx.Session.OnPacketRTPAny(func(medi *description.Media, forma format.Format, pkt *rtp.Packet) {
-		s.packetsSent.Add(1)
-		payloadLen := int64(len(pkt.Payload))
-		s.bytesSent.Add(payloadLen)
+	ctx.Session.OnPacketRTPAny(func(medi *description.Media, _ format.Format, pkt *rtp.Packet) {
+		s.meter.Record(len(pkt.Payload))
 		_ = stream.WritePacketRTP(medi, pkt)
 	})
-
 	ctx.Session.OnPacketRTCPAny(func(medi *description.Media, pkt rtcp.Packet) {
 		_ = stream.WritePacketRTCP(medi, pkt)
 	})
@@ -316,7 +300,8 @@ func (s *Server) OnRecord(ctx *gortsplib.ServerHandlerOnRecordCtx) (*base.Respon
 	return &base.Response{StatusCode: base.StatusOK}, nil
 }
 
-// CloseStream closes a specific stream.
+// CloseStream closes a specific stream so that readers reconnect and receive
+// a fresh SDP (used after a profile hot-reload).
 func (s *Server) CloseStream(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -327,14 +312,14 @@ func (s *Server) CloseStream(token string) {
 	}
 }
 
-// GetClients returns list of connected RTSP client sessions.
+// GetClients returns the list of connected RTSP reader sessions.
 func (s *Server) GetClients() []ClientInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	now := time.Now()
-	clients := make([]ClientInfo, 0, len(s.sessions))
-	for _, rec := range s.sessions {
+	now := s.now()
+	clients := make([]ClientInfo, 0, len(s.readers))
+	for _, rec := range s.readers {
 		clients = append(clients, ClientInfo{
 			ID:        rec.id,
 			RemoteIP:  rec.remoteIP,
@@ -348,26 +333,16 @@ func (s *Server) GetClients() []ClientInfo {
 
 // GetStats returns current streaming metrics.
 func (s *Server) GetStats() StreamStats {
-	now := time.Now()
-	totalBytes := s.bytesSent.Load()
-	packets := s.packetsSent.Load()
+	packets, bytes, kbps := s.meter.Snapshot(s.now())
 
-	s.mu.Lock()
-	sec := now.Sub(s.lastStatTime).Seconds()
-	if sec >= 1.0 {
-		diffBytes := totalBytes - s.lastBytes
-		kbps := int64((float64(diffBytes*8) / sec) / 1000.0)
-		s.currentKbps.Store(kbps)
-		s.lastBytes = totalBytes
-		s.lastStatTime = now
-	}
-	readers := len(s.sessions)
-	s.mu.Unlock()
+	s.mu.RLock()
+	readers := len(s.readers)
+	s.mu.RUnlock()
 
 	return StreamStats{
 		PacketsSent:   packets,
-		BytesSent:     totalBytes,
-		BitrateKbps:   float64(s.currentKbps.Load()),
+		BytesSent:     bytes,
+		BitrateKbps:   kbps,
 		ActiveReaders: readers,
 	}
 }

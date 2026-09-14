@@ -26,7 +26,7 @@ func main() {
 		configPath = config.GetDefaultPath()
 	}
 
-	logger.Infof("mockcam", "Initializing MockCam virtual network camera...")
+	logger.Infof("mockcam", "Initializing MockCam v%s virtual network camera...", config.AppVersion)
 	logger.Infof("mockcam", "Using config file: %s", configPath)
 
 	// 1. Load configuration
@@ -35,6 +35,9 @@ func main() {
 		log.Fatalf("[mockcam] Failed to load configuration: %v", err)
 	}
 	cfg := cfgMgr.Get()
+	if err := config.Validate(cfg); err != nil {
+		log.Printf("[mockcam] Warning: configuration has problems (fix them in the Web UI): %v", err)
+	}
 
 	// Configure initial log level
 	if cfg.Server.LogLevel != "" {
