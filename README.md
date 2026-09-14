@@ -18,18 +18,23 @@ Go による完全静的リンクバイナリと `gortsplib/v4` による 1:N �
   * `gortsplib/v4` を採用し、FFmpeg からの RTP パケットをノンブロッキングにクライアントへファンアウト。
 * **🎥 マルチプロファイル & ホットリロード**:
   * メインストリーム（1080p CBR）、サブストリーム（720p VBR）など複数プロファイルを独立管理。
-  * 設定変更時は該当プロファイルのサブプロセスのみを安全にホットリロード（`SIGTERM` → 2 秒後 `Kill`）。他ストリームを一切中断させません。
-* **⏱️ 時報同期音声 & タイムコード描画**:
-  * 映像にはミリ秒単位の PTS タイムコードを描画。
-  * 音声には毎秒ピッ音・周期ビープを同期させた時報モード（`time_signal`）および無音モード（`silent`）を搭載。
+  * 設定変更時は該当プロファイルのサブプロセスのみを安全にホットリロード（`SIGTERM` → 応答がなければ `Kill`）。他ストリームを一切中断させません。
+  * FFmpeg が異常終了した場合は自動的に再起動します。
+* **🎞️ テストパターン & オーバーレイ**:
+  * 映像ソースは `testsrc2` / `smptebars` / `allrgb` / `mptestsrc` から選択、または動画ファイルをループ再生（`source_mode: "file"`）。
+  * PTS タイムコード（`HH:MM:SS.mmm`）、任意の OSD テキスト、センサーノイズ、VMS の動体検知テスト用の移動バウンディングボックスを重畳可能。
+* **⏱️ 時報同期音声**:
+  * 時報モード（`time_signal`）、無音（`silent`）、ホワイトノイズ（`noise`）、チャイム（`chime`）の 4 種類の音声モードを搭載。
 * **📡 ONVIF Profile S 完全準拠**:
   * **WS-Discovery**: UDP 3702（マルチキャスト `239.255.255.250`）による自動検出に対応。
   * **SOAP サービス群**: Device Service、Media Service、PTZ Service を規格に準拠して実装。
 * **🧭 リアルタイム PTZ 仮想ステートマシン**:
   * メモリ上で Pan/Tilt/Zoom 座標を管理。VMS からの PTZ 操作や Web UI からの操作をリアルタイムに処理。
   * Web ダッシュボード上の SVG レーダー画面と WebSocket（`/ws`）で双方向リアルタイム同期。
+  * PTZ プリセットの保存・呼び出し（`settings.json` に永続化）。
 * **💻 ビルドステップ不要の埋め込み Web ダッシュボード**:
   * Go の `embed` 機能により、単一バイナリ内に Tailwind CSS + Alpine.js ダッシュボードを完全内包。
+  * ライブ診断ログ（FFmpeg の stderr を含む）、接続中 RTSP クライアント一覧、設定のエクスポート / ファクトリーリセット、診断情報の一括エクスポートに対応。
 
 ---
 
@@ -68,9 +73,14 @@ go build -o mockcam cmd/mockcam/main.go
 
 # 起動
 ./mockcam
+
+# 設定ファイルのパスを明示する場合
+./mockcam -config ./config/settings.json
 ```
 
-> 初回起動時、`/config/settings.json`（または `./config/settings.json`）が存在しない場合はデフォルト設定が自動生成されます。
+> 設定ファイルの探索順は `-config` フラグ → 環境変数 `CONFIG_PATH` → 既定パス（Linux/macOS: `/config/settings.json`、Windows: `./config/settings.json`）です。ファイルが存在しない場合はデフォルト設定が自動生成されます。
+>
+> Windows では WS-Discovery のマルチキャスト待受に失敗することがありますが、警告ログのみで起動は継続します（RTSP / Web / SOAP は利用可能）。
 
 ---
 
@@ -81,9 +91,12 @@ go build -o mockcam cmd/mockcam/main.go
 ```text
 http://localhost:8080
 ```
-* **ステータスパネル**: 稼働時間、接続中の RTSP クライアント数、稼働プロファイル数を確認。
-* **設定変更**: 解像度、FPS、GOP、ビットレート（CBR/VBR）、音声モードを GUI 上で即座に変更・再起動。
-* **PTZ レーダー**: 十字キーやスライダーでカメラポインターを動かすと、リアルタイムに連動します。
+* **ステータスパネル**: 稼働時間、接続中の RTSP クライアント数、送出パケット数・ビットレート、稼働プロファイル数を確認。
+* **プロファイル管理**: 解像度、FPS、GOP、ビットレート（CBR/VBR）、テストパターン、OSD テキスト、音声モードを GUI 上で即座に変更・ホットリロード。プロファイルの追加・削除も可能。
+* **PTZ レーダー & プリセット**: 十字キーやスライダーでカメラポインターを動かすと、リアルタイムに連動します。現在位置をプリセットとして保存・呼び出しできます。
+* **ライブスナップショット**: PTZ 位置を反映した JPEG プレビューを一定間隔で自動更新。
+* **診断ログ & クライアント一覧**: システムログと FFmpeg の出力をリアルタイム表示、接続中の RTSP セッションを一覧化。
+* **設定のバックアップ / リセット**: `settings.json` のエクスポート、ファクトリーリセット、診断情報（設定・統計・ログ）の一括エクスポート。
 
 ### 2. VLC / ffplay での直接視聴
 
@@ -110,7 +123,9 @@ ffplay rtsp://admin:admin1234@localhost:8554/live/Profile_2
 
 ## ⚙️ 設定仕様 (`settings.json`)
 
-設定ファイルは `/config/settings.json`（または環境変数 `CONFIG_PATH` で指定したパス）に保存されます。
+設定ファイルは `/config/settings.json`（Windows では `./config/settings.json`、または `-config` フラグ / 環境変数 `CONFIG_PATH` で指定したパス）に保存されます。Web UI や REST API から変更した内容は即座に同ファイルへ書き戻されます。
+
+初回起動時に自動生成されるデフォルト設定（メイン / サブの 2 プロファイル）:
 
 ```json
 {
@@ -142,7 +157,10 @@ ffplay rtsp://admin:admin1234@localhost:8554/live/Profile_2
         "gop_size": 30,
         "bitrate_mode": "CBR",
         "bitrate_limit_kbps": 4000,
-        "quality": 5.0
+        "quality": 5,
+        "show_clock": false,
+        "enable_noise": false,
+        "enable_motion_box": false
       },
       "audio": {
         "enabled": true,
@@ -151,32 +169,92 @@ ffplay rtsp://admin:admin1234@localhost:8554/live/Profile_2
         "bitrate_kbps": 128,
         "sample_rate": 44100
       }
+    },
+    {
+      "token": "Profile_2",
+      "name": "SubStream-VBR-720p",
+      "source_mode": "generate",
+      "source_path": "",
+      "video": {
+        "codec": "H264",
+        "resolution": { "width": 1280, "height": 720 },
+        "framerate": 15,
+        "gop_size": 30,
+        "bitrate_mode": "VBR",
+        "bitrate_limit_kbps": 1000,
+        "quality": 3,
+        "show_clock": false,
+        "enable_noise": false,
+        "enable_motion_box": false
+      },
+      "audio": {
+        "enabled": true,
+        "mode": "silent",
+        "codec": "AAC",
+        "bitrate_kbps": 64,
+        "sample_rate": 44100
+      }
     }
   ],
   "ptz": {
     "enabled": true,
     "node_token": "PTZNode_1",
-    "pan": 0.0,
-    "tilt": 0.0,
-    "zoom": 0.0
+    "pan": 0,
+    "tilt": 0,
+    "zoom": 0
   }
 }
 ```
 
 ### 設定項目一覧
 
-| セクション | キー | 説明 | デフォルト値 |
-|---|---|---|---|
-| `server` | `rtsp_port` | RTSP サーバー待受ポート | `8554` |
-| `server` | `http_port` | Web UI, REST API, SOAP 待受ポート | `8080` |
-| `server` | `onvif_port` | WS-Discovery マルチキャストポート | `3702` |
-| `server` | `auth_type` | 認証方式 (`digest`, `basic`, `none`) | `digest` |
-| `server` | `auth_user` | 認証ユーザー名 | `admin` |
-| `server` | `auth_pass` | 認証パスワード | `admin1234` |
-| `video` | `codec` | 映像コーデック (`H264`, `H265`) | `H264` |
-| `video` | `bitrate_mode`| ビットレート制御 (`CBR`, `VBR`) | `CBR` |
-| `audio` | `mode` | 音声モード (`time_signal`, `silent`, `""`) | `time_signal` |
-| `ptz` | `pan` / `tilt` / `zoom` | 初期 PTZ 仮想座標 | `0.0` |
+#### `server`
+
+| キー | 説明 | デフォルト値 |
+|---|---|---|
+| `rtsp_port` | RTSP サーバー待受ポート | `8554` |
+| `http_port` | Web UI, REST API, SOAP 待受ポート | `8080` |
+| `onvif_port` | WS-Discovery マルチキャストポート | `3702` |
+| `auth_type` | 認証方式 (`digest`, `basic`, `none`)。RTSP と ONVIF SOAP に共通で適用 | `digest` |
+| `auth_user` / `auth_pass` | 認証ユーザー名 / パスワード | `admin` / `admin1234` |
+| `log_level` | ログ出力レベル (`DEBUG`, `INFO`, `WARN`, `ERROR`)。省略時は `INFO` | （省略） |
+| `device_info.*` | ONVIF `GetDeviceInformation` で返すメーカー・モデル・ファームウェア・シリアル・ハードウェア ID | 上記参照 |
+
+#### `profiles[]`
+
+| キー | 説明 | デフォルト値 |
+|---|---|---|
+| `token` | プロファイル識別子。RTSP パス `/live/<token>` および ONVIF プロファイルトークンになる | `Profile_1` |
+| `name` | 表示名 | `MainStream-CBR-1080p` |
+| `source_mode` | `generate`（FFmpeg のテストパターン生成）または `file`（動画ファイルをループ再生） | `generate` |
+| `source_path` | `file` モード時の動画ファイルパス（コンテナでは `/media` 配下）。存在しない場合は `generate` にフォールバック | `""` |
+| `video.codec` | 映像コーデック (`H264`, `H265`) | `H264` |
+| `video.resolution` | `width` / `height` | `1920x1080` |
+| `video.framerate` | フレームレート (fps) | `30` |
+| `video.gop_size` | GOP 長（キーフレーム間隔） | `30` |
+| `video.bitrate_mode` | ビットレート制御 (`CBR`, `VBR`) | `CBR` |
+| `video.bitrate_limit_kbps` | ビットレート上限 (kbps)。CBR では固定値、VBR では `maxrate` | `4000` |
+| `video.quality` | 予約項目（現在のエンコード処理では未使用） | `5` |
+| `video.pattern` | テストパターン (`testsrc2`, `smptebars`, `allrgb`, `mptestsrc`)。`generate` モードのみ | `testsrc2` |
+| `video.osd_text` | 左上に重畳する任意の OSD テキスト | `""` |
+| `video.show_clock` | PTS タイムコード（`HH:MM:SS.mmm`）を画面下部に描画。`osd_text` が空の場合は常に描画 | `false` |
+| `video.enable_noise` | センサーノイズ（グレイン）を付加 | `false` |
+| `video.enable_motion_box` | 動体検知テスト用の赤い移動バウンディングボックスを描画 | `false` |
+| `audio.enabled` | 音声トラックの有無 | `true` |
+| `audio.mode` | 音声モード (`time_signal`: 880Hz 時報, `silent`: 無音, `noise`: ホワイトノイズ, `chime`: チャイム) | `time_signal` |
+| `audio.codec` | 音声コーデック（現在は `AAC` のみ） | `AAC` |
+| `audio.bitrate_kbps` / `audio.sample_rate` | 音声ビットレート (kbps) / サンプリングレート (Hz) | `128` / `44100` |
+
+#### `ptz`
+
+| キー | 説明 | デフォルト値 |
+|---|---|---|
+| `enabled` | PTZ サービスの有効化 | `true` |
+| `node_token` | ONVIF PTZ ノードトークン | `PTZNode_1` |
+| `pan` / `tilt` | 仮想座標（`-1.0`〜`1.0`）。移動のたびに現在値が保存される | `0` |
+| `zoom` | 仮想ズーム（`0.0`〜`1.0`） | `0` |
+| `speed` | 予約項目（現在未使用。ContinuousMove は速度ベクトル × 10%/秒 で座標を更新） | （省略） |
+| `presets[]` | 保存済みプリセット `{ "name", "pan", "tilt", "zoom" }` の配列。Web UI / `/api/ptz/presets` から管理 | （省略） |
 
 ---
 
@@ -218,6 +296,7 @@ net.core.wmem_max = 16777216
 
 * [ONVIF Profile S 詳細仕様書](docs/onvif_profile_s.md)
 * [REST API & WebSocket 仕様書](docs/rest_api.md)
+* [AI コーディングエージェント向け開発ガイド](AGENTS.md)（Claude Code は `CLAUDE.md`、GitHub Copilot は `.github/copilot-instructions.md` 経由で参照）
 
 ---
 
