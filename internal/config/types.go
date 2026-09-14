@@ -1,7 +1,7 @@
 package config
 
 // AppVersion represents the current software release version.
-const AppVersion = "1.3.1"
+const AppVersion = "1.3.2"
 
 // Resolution defines video width and height.
 type Resolution struct {
@@ -55,14 +55,16 @@ type DeviceInfoConfig struct {
 
 // ServerConfig defines server port and authentication settings.
 type ServerConfig struct {
-	RTSPPort   int              `json:"rtsp_port"`
-	HTTPPort   int              `json:"http_port"`
-	ONVIFPort  int              `json:"onvif_port"`
-	AuthType   string           `json:"auth_type"` // "basic", "digest", or "none"
-	AuthUser   string           `json:"auth_user"`
-	AuthPass   string           `json:"auth_pass"`
-	LogLevel   string           `json:"log_level,omitempty"` // "DEBUG", "INFO", "WARN", "ERROR"
-	DeviceInfo DeviceInfoConfig `json:"device_info"`
+	RTSPPort          int              `json:"rtsp_port"`
+	HTTPPort          int              `json:"http_port"`
+	ONVIFPort         int              `json:"onvif_port"`
+	AuthType          string           `json:"auth_type"` // "basic", "digest", or "none"
+	AuthUser          string           `json:"auth_user"`
+	AuthPass          string           `json:"auth_pass"`
+	LogLevel          string           `json:"log_level,omitempty"`           // "DEBUG", "INFO", "WARN", "ERROR"
+	VoicevoxURL       string           `json:"voicevox_url,omitempty"`        // e.g. "http://voicevox:50021" or "http://localhost:50021"
+	VoicevoxSpeakerID int              `json:"voicevox_speaker_id,omitempty"` // Speaker ID, e.g. 3 (ずんだもん) or 2 (四国めたん)
+	DeviceInfo        DeviceInfoConfig `json:"device_info"`
 }
 
 // PTZPreset represents a saved PTZ coordinate.

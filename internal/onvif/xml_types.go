@@ -6,20 +6,20 @@ import (
 
 // Standard ONVIF and SOAP namespaces
 const (
-	NamespaceSOAPEnv  = "http://www.w3.org/2003/05/soap-envelope"
-	NamespaceSOAP11   = "http://schemas.xmlsoap.org/soap/envelope/"
-	NamespaceWSA      = "http://schemas.xmlsoap.org/ws/2004/08/addressing"
-	NamespaceWSA2005  = "http://www.w3.org/2005/08/addressing"
-	NamespaceDiscovery = "http://schemas.xmlsoap.org/ws/2005/04/discovery"
+	NamespaceSOAPEnv     = "http://www.w3.org/2003/05/soap-envelope"
+	NamespaceSOAP11      = "http://schemas.xmlsoap.org/soap/envelope/"
+	NamespaceWSA         = "http://schemas.xmlsoap.org/ws/2004/08/addressing"
+	NamespaceWSA2005     = "http://www.w3.org/2005/08/addressing"
+	NamespaceDiscovery   = "http://schemas.xmlsoap.org/ws/2005/04/discovery"
 	NamespaceONVIFSchema = "http://www.onvif.org/ver10/schema"
-	NamespaceDeviceWSDL = "http://www.onvif.org/ver10/device/wsdl"
-	NamespaceMediaWSDL  = "http://www.onvif.org/ver10/media/wsdl"
-	NamespacePTZWSDL    = "http://www.onvif.org/ver20/ptz/wsdl"
+	NamespaceDeviceWSDL  = "http://www.onvif.org/ver10/device/wsdl"
+	NamespaceMediaWSDL   = "http://www.onvif.org/ver10/media/wsdl"
+	NamespacePTZWSDL     = "http://www.onvif.org/ver20/ptz/wsdl"
 )
 
 // SOAPEnvelope represents a generic SOAP envelope for parsing.
 type SOAPEnvelope struct {
-	XMLName xml.Name  `xml:"Envelope"`
+	XMLName xml.Name   `xml:"Envelope"`
 	Header  SOAPHeader `xml:"Header"`
 	Body    SOAPBody   `xml:"Body"`
 }
@@ -83,7 +83,7 @@ type ProbeType struct {
 
 // ProbeMatchesEnvelope is the response sent to WS-Discovery Probes.
 type ProbeMatchesEnvelope struct {
-	XMLName xml.Name `xml:"soap:Envelope"`
+	XMLName  xml.Name `xml:"soap:Envelope"`
 	SoapAttr string   `xml:"xmlns:soap,attr"`
 	WsaAttr  string   `xml:"xmlns:wsa,attr"`
 	DAttr    string   `xml:"xmlns:d,attr"`
@@ -105,10 +105,10 @@ type ProbeMatchItem struct {
 	EndpointReference struct {
 		Address string `xml:"wsa:Address"`
 	} `xml:"wsa:EndpointReference"`
-	Types         string `xml:"d:Types"`
-	Scopes        string `xml:"d:Scopes"`
-	XAddrs        string `xml:"d:XAddrs"`
-	MetadataVersion int  `xml:"d:MetadataVersion"`
+	Types           string `xml:"d:Types"`
+	Scopes          string `xml:"d:Scopes"`
+	XAddrs          string `xml:"d:XAddrs"`
+	MetadataVersion int    `xml:"d:MetadataVersion"`
 }
 
 // --- ONVIF Schema types ---
@@ -134,7 +134,7 @@ type PTZVector struct {
 
 // PTZStatus represents the current status of PTZ.
 type PTZStatus struct {
-	Position *PTZVector `xml:"tt:Position,omitempty"`
+	Position   *PTZVector `xml:"tt:Position,omitempty"`
 	MoveStatus struct {
 		PanTilt string `xml:"tt:PanTilt"`
 		Zoom    string `xml:"tt:Zoom"`
@@ -163,13 +163,13 @@ type H264Configuration struct {
 
 // VideoEncoderConfiguration represents a video encoder config in ONVIF.
 type VideoEncoderConfiguration struct {
-	Token       string            `xml:"token,attr"`
-	Name        string            `xml:"tt:Name"`
-	UseCount    int               `xml:"tt:UseCount"`
-	Encoding    string            `xml:"tt:Encoding"`
-	Resolution  VideoResolution   `xml:"tt:Resolution"`
-	Quality     float64           `xml:"tt:Quality"`
-	RateControl VideoRateControl  `xml:"tt:RateControl"`
+	Token       string             `xml:"token,attr"`
+	Name        string             `xml:"tt:Name"`
+	UseCount    int                `xml:"tt:UseCount"`
+	Encoding    string             `xml:"tt:Encoding"`
+	Resolution  VideoResolution    `xml:"tt:Resolution"`
+	Quality     float64            `xml:"tt:Quality"`
+	RateControl VideoRateControl   `xml:"tt:RateControl"`
 	H264        *H264Configuration `xml:"tt:H264,omitempty"`
 	Multicast   struct {
 		Address struct {
