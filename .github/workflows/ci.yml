@@ -19,7 +19,9 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          # Track the latest 1.26.x patch release: go.mod's "go 1.26.0" would
+          # otherwise pin the very first patch, whose stdlib has known CVEs.
+          go-version: '1.26.x'
           check-latest: true
 
       - name: gofmt

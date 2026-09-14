@@ -23,7 +23,7 @@ When releasing a new version, bump the version string across all required locati
    - Update `Version` fields when Go modules were bumped (`licenses_test.go` cross-checks go.mod).
 4. **`README.md`** & **`docs/`** (if applicable):
    - Ensure documented features and version badge/mentions reflect the release.
-5. **Toolchain**: `go.mod` (`go 1.26`), `Dockerfile` (`golang:1.26-alpine`, `alpine:3.22`) and `.github/workflows/ci.yml` (`go-version-file: go.mod`, Node 24 based actions) must stay consistent.
+5. **Toolchain**: `go.mod` (`go 1.26`), `Dockerfile` (`golang:1.26-alpine`, `alpine:3.22`) and `.github/workflows/ci.yml` (`go-version: '1.26.x'`, Node 24 based actions) must stay consistent.
 
 ## 2. Local Static Analysis & Unit Tests
 
