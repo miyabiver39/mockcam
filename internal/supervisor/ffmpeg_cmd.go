@@ -255,7 +255,11 @@ func previewArgs(p PreviewOptions) []string {
 		// Keep the aspect ratio, never upscale, keep dimensions even for yuv420.
 		"-vf", fmt.Sprintf("scale=w='min(%d,iw)':h=-2", maxWidth),
 		"-r", fmt.Sprintf("%d", fps),
-		"-c:v", "mjpeg", "-q:v", fmt.Sprintf("%d", quality), "-pix_fmt", "yuvj420p",
+		// "-huffman default" forces the standard (ITU-T T.81 Annex K) Huffman
+		// tables in every DHT segment. FFmpeg's mjpeg encoder otherwise emits
+		// per-frame optimized tables, which some VMS/NVR decoders reject.
+		"-c:v", "mjpeg", "-q:v", fmt.Sprintf("%d", quality), "-huffman", "default",
+		"-pix_fmt", "yuvj420p",
 		"-f", "mjpeg", "pipe:1",
 	}
 }

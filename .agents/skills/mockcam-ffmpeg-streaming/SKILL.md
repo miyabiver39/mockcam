@@ -56,8 +56,10 @@ MockCam supports:
 When a frame sink is configured (`supervisor.WithFrameSink`), `BuildFFmpegArgsWith` appends a **second output** after the RTSP one:
 
 ```
--map 0:v:0 -an -vf scale=w='min(1280,iw)':h=-2 -r 5 -c:v mjpeg -q:v 5 -pix_fmt yuvj420p -f mjpeg pipe:1
+-map 0:v:0 -an -vf scale=w='min(1280,iw)':h=-2 -r 5 -c:v mjpeg -q:v 5 -huffman default -pix_fmt yuvj420p -f mjpeg pipe:1
 ```
+
+- `-huffman default` is mandatory: FFmpeg's mjpeg encoder otherwise writes per-frame optimized Huffman tables, and the resulting DHT segments are rejected by some VMS/NVR JPEG decoders. The standard (Annex K) tables must be used.
 
 - It must stay *after* the RTSP output so the H.264/audio options remain scoped to the RTSP stream.
 - The first output keeps FFmpeg's automatic stream selection; the second maps video explicitly and drops audio.
