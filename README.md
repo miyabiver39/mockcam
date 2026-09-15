@@ -33,10 +33,11 @@ A fully static Go binary and the 1:N zero-copy fan-out of `gortsplib/v5` let a s
   * Japanese is synthesised with Open JTalk (tohoku-f01 female voice), English with espeak-ng / Windows SAPI. Every 10 seconds the upcoming mark is announced, followed by the tone pattern "pi-po-pi-po-pi-po-pi-pi-pi—" (880/440 Hz pips, 880 Hz mark).
 * **📡 ONVIF Profile S**
   * **WS-Discovery** on UDP 3702 (multicast `239.255.255.250`) for automatic detection.
-  * **SOAP services**: Device, Media and PTZ services implemented to the specification.
+  * **SOAP services**: Device, Media and PTZ services (`GetDeviceInformation`, `GetCapabilities`, `GetServices`, `GetNetworkInterfaces`, `GetProfiles`, `GetStreamUri`, `GetSnapshotUri`, encoder/source configurations, PTZ moves, home position and presets, ...).
+  * **WS-Security UsernameToken** (PasswordDigest / PasswordText) as sent by ONVIF Device Manager, VMS/NVR software and `onvif-zeep`, in addition to HTTP Basic / Digest.
 * **🧭 Real-time virtual PTZ state machine**
   * Pan/tilt/zoom kept in memory and driven by VMS PTZ commands or the Web UI; two-way live sync with the SVG radar in the dashboard over WebSocket (`/ws`).
-  * PTZ presets are saved to `settings.json`.
+  * PTZ presets are saved to `settings.json` and shared between the REST API, MCP and ONVIF (`SetPreset` / `GotoPreset`).
 * **💻 Embedded Web dashboard, no build step**
   * Tailwind CSS + Alpine.js dashboard embedded in the binary with Go's `embed`; 7 UI languages.
   * Live diagnostic log (including FFmpeg stderr), connected RTSP clients, config export / factory reset, one-click diagnostics bundle, third-party license notice.
@@ -133,7 +134,8 @@ The `X-MockCam-Source` response header is `live` for encoder frames and `synthet
    ```text
    http://<Host-IP>:8080/onvif/device_service
    ```
-4. Credentials: `admin` / `admin1234`. `GetSnapshotUri` returns the JPEG endpoint above.
+4. Credentials: `admin` / `admin1234`, sent either as a WS-Security UsernameToken in the SOAP header (what ODM and most VMS do) or as HTTP Basic / Digest. `GetSnapshotUri` returns the JPEG endpoint above.
+5. Clients must have their clock within 5 minutes of MockCam for `PasswordDigest` tokens; `GetSystemDateAndTime` is unauthenticated so they can synchronise first.
 
 ### 5. MCP (AI agents)
 

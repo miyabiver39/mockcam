@@ -9,6 +9,12 @@ import (
 	"mockcam/internal/config"
 )
 
+// Token conventions shared by the profile and configuration responses.
+const (
+	videoSourceToken = "VideoSource_1"
+	audioSourceToken = "AudioSource_1"
+)
+
 // MediaHandler handles ONVIF Media service SOAP requests.
 type MediaHandler struct {
 	cfgMgr *config.Manager
@@ -19,15 +25,68 @@ func NewMediaHandler(cfgMgr *config.Manager) *MediaHandler {
 	return &MediaHandler{cfgMgr: cfgMgr}
 }
 
+// lookupProfile resolves the ProfileToken of a request. An empty token falls
+// back to the first profile (lenient for hand-written clients); an unknown
+// token yields a ter:NoProfile fault as required by the specification.
+func (h *MediaHandler) lookupProfile(body []byte, cfg config.Config) (config.ProfileConfig, error) {
+	token := extractTagValue(body, "ProfileToken")
+	if token == "" && len(cfg.Profiles) > 0 {
+		return cfg.Profiles[0], nil
+	}
+	for _, p := range cfg.Profiles {
+		if p.Token == token {
+			return p, nil
+		}
+	}
+	return config.ProfileConfig{}, senderFault("ter:InvalidArgVal/ter:NoProfile", "The requested profile token does not exist: "+token)
+}
+
+// profileByConfigToken resolves a "<prefix><profile token>" configuration
+// token (VEC_x, VSC_x, AEC_x, ASC_x) to its profile.
+func (h *MediaHandler) profileByConfigToken(body []byte, prefix string, cfg config.Config) (config.ProfileConfig, error) {
+	token := extractTagValue(body, "ConfigurationToken")
+	for _, p := range cfg.Profiles {
+		if prefix+p.Token == token {
+			return p, nil
+		}
+	}
+	return config.ProfileConfig{}, senderFault("ter:InvalidArgVal/ter:NoConfig", "The requested configuration token does not exist: "+token)
+}
+
+// onvifVideoEncoding maps a MockCam codec name to the tt:VideoEncoding value
+// (Media1 knows JPEG / MPEG4 / H264; newer codecs are passed through as-is).
+func onvifVideoEncoding(codec string) string {
+	switch strings.ToUpper(codec) {
+	case "", "H264":
+		return "H264"
+	case "HEVC", "H265":
+		return "H265"
+	case "MJPEG", "JPEG":
+		return "JPEG"
+	default:
+		return strings.ToUpper(codec)
+	}
+}
+
+// onvifAudioEncoding maps a MockCam audio codec to tt:AudioEncoding (G711 / G726 / AAC).
+func onvifAudioEncoding(codec string) string {
+	switch strings.ToUpper(codec) {
+	case "G711A", "PCMA", "ALAW", "G711U", "PCMU", "MULAW", "G711":
+		return "G711"
+	case "G726", "ADPCM_G726":
+		return "G726"
+	default:
+		return "AAC"
+	}
+}
+
 // HandleGetProfiles generates response for GetProfiles.
 func (h *MediaHandler) HandleGetProfiles() string {
 	cfg := h.cfgMgr.Get()
-
 	var profilesXML strings.Builder
 	for _, p := range cfg.Profiles {
-		profilesXML.WriteString(h.renderProfileXML(p, cfg.PTZ))
+		profilesXML.WriteString(h.renderProfileXML("trt:Profiles", p, cfg))
 	}
-
 	return fmt.Sprintf(`
 		<trt:GetProfilesResponse xmlns:trt="%s" xmlns:tt="%s">
 			%s
@@ -39,74 +98,70 @@ func (h *MediaHandler) HandleGetProfiles() string {
 }
 
 // HandleGetProfile generates response for a single GetProfile request.
-func (h *MediaHandler) HandleGetProfile(body []byte) string {
-	token := extractTagValue(body, "ProfileToken")
+func (h *MediaHandler) HandleGetProfile(body []byte) (string, error) {
 	cfg := h.cfgMgr.Get()
-
-	prof, ok := h.cfgMgr.GetProfile(token)
-	if !ok {
-		if len(cfg.Profiles) > 0 {
-			prof = cfg.Profiles[0]
-		}
+	prof, err := h.lookupProfile(body, cfg)
+	if err != nil {
+		return "", err
 	}
-
 	return fmt.Sprintf(`
 		<trt:GetProfileResponse xmlns:trt="%s" xmlns:tt="%s">
 			%s
 		</trt:GetProfileResponse>`,
 		NamespaceMediaWSDL,
 		NamespaceONVIFSchema,
-		h.renderProfileXML(prof, cfg.PTZ),
+		h.renderProfileXML("trt:Profile", prof, cfg),
+	), nil
+}
+
+func renderVideoSourceConfigurationXML(elem string, p config.ProfileConfig) string {
+	return fmt.Sprintf(`
+		<%[1]s token="VSC_%[2]s">
+			<tt:Name>VideoSourceConfig_%[2]s</tt:Name>
+			<tt:UseCount>1</tt:UseCount>
+			<tt:SourceToken>%[3]s</tt:SourceToken>
+			<tt:Bounds x="0" y="0" width="%[4]d" height="%[5]d"/>
+		</%[1]s>`,
+		elem, p.Token, videoSourceToken, p.Video.Resolution.Width, p.Video.Resolution.Height,
 	)
 }
 
-func (h *MediaHandler) renderProfileXML(p config.ProfileConfig, ptz config.PTZConfig) string {
-	var buf bytes.Buffer
-
-	// Video Source Configuration
-	vsc := fmt.Sprintf(`
-		<tt:VideoSourceConfiguration token="VSC_%s">
-			<tt:Name>VideoSourceConfig_%s</tt:Name>
+func renderAudioSourceConfigurationXML(elem string, p config.ProfileConfig) string {
+	return fmt.Sprintf(`
+		<%[1]s token="ASC_%[2]s">
+			<tt:Name>AudioSourceConfig_%[2]s</tt:Name>
 			<tt:UseCount>1</tt:UseCount>
-			<tt:SourceToken>VideoSource_1</tt:SourceToken>
-			<tt:Bounds x="0" y="0" width="%d" height="%d" />
-		</tt:VideoSourceConfiguration>`,
-		p.Token, p.Token, p.Video.Resolution.Width, p.Video.Resolution.Height,
+			<tt:SourceToken>%[3]s</tt:SourceToken>
+		</%[1]s>`,
+		elem, p.Token, audioSourceToken,
 	)
+}
 
-	// Audio Source Configuration
-	var asc string
-	if p.Audio.Enabled {
-		asc = fmt.Sprintf(`
-		<tt:AudioSourceConfiguration token="ASC_%s">
-			<tt:Name>AudioSourceConfig_%s</tt:Name>
-			<tt:UseCount>1</tt:UseCount>
-			<tt:SourceToken>AudioSource_1</tt:SourceToken>
-		</tt:AudioSourceConfiguration>`,
-			p.Token, p.Token,
-		)
-	}
-
-	// Video Encoder Configuration
-	vec := fmt.Sprintf(`
-		<tt:VideoEncoderConfiguration token="VEC_%s">
-			<tt:Name>VideoEncoderConfig_%s</tt:Name>
-			<tt:UseCount>1</tt:UseCount>
-			<tt:Encoding>%s</tt:Encoding>
-			<tt:Resolution>
-				<tt:Width>%d</tt:Width>
-				<tt:Height>%d</tt:Height>
-			</tt:Resolution>
-			<tt:Quality>%.1f</tt:Quality>
-			<tt:RateControl>
-				<tt:FrameRateLimit>%d</tt:FrameRateLimit>
-				<tt:EncodingInterval>1</tt:EncodingInterval>
-				<tt:BitrateLimit>%d</tt:BitrateLimit>
-			</tt:RateControl>
+func renderVideoEncoderConfigurationXML(elem string, p config.ProfileConfig) string {
+	encoding := onvifVideoEncoding(p.Video.Codec)
+	codecDetail := ""
+	if encoding == "H264" {
+		codecDetail = fmt.Sprintf(`
 			<tt:H264>
 				<tt:GovLength>%d</tt:GovLength>
 				<tt:H264Profile>High</tt:H264Profile>
-			</tt:H264>
+			</tt:H264>`, p.Video.GopSize)
+	}
+	return fmt.Sprintf(`
+		<%[1]s token="VEC_%[2]s">
+			<tt:Name>VideoEncoderConfig_%[2]s</tt:Name>
+			<tt:UseCount>1</tt:UseCount>
+			<tt:Encoding>%[3]s</tt:Encoding>
+			<tt:Resolution>
+				<tt:Width>%[4]d</tt:Width>
+				<tt:Height>%[5]d</tt:Height>
+			</tt:Resolution>
+			<tt:Quality>%.1[6]f</tt:Quality>
+			<tt:RateControl>
+				<tt:FrameRateLimit>%[7]d</tt:FrameRateLimit>
+				<tt:EncodingInterval>1</tt:EncodingInterval>
+				<tt:BitrateLimit>%[8]d</tt:BitrateLimit>
+			</tt:RateControl>%[9]s
 			<tt:Multicast>
 				<tt:Address>
 					<tt:Type>IPv4</tt:Type>
@@ -117,26 +172,25 @@ func (h *MediaHandler) renderProfileXML(p config.ProfileConfig, ptz config.PTZCo
 				<tt:AutoStart>false</tt:AutoStart>
 			</tt:Multicast>
 			<tt:SessionTimeout>PT60S</tt:SessionTimeout>
-		</tt:VideoEncoderConfiguration>`,
-		p.Token, p.Token,
-		p.Video.Codec,
+		</%[1]s>`,
+		elem, p.Token,
+		encoding,
 		p.Video.Resolution.Width, p.Video.Resolution.Height,
 		p.Video.Quality,
 		p.Video.Framerate,
 		p.Video.BitrateLimitKbps,
-		p.Video.GopSize,
+		codecDetail,
 	)
+}
 
-	// Audio Encoder Configuration
-	var aec string
-	if p.Audio.Enabled {
-		aec = fmt.Sprintf(`
-		<tt:AudioEncoderConfiguration token="AEC_%s">
-			<tt:Name>AudioEncoderConfig_%s</tt:Name>
+func renderAudioEncoderConfigurationXML(elem string, p config.ProfileConfig) string {
+	return fmt.Sprintf(`
+		<%[1]s token="AEC_%[2]s">
+			<tt:Name>AudioEncoderConfig_%[2]s</tt:Name>
 			<tt:UseCount>1</tt:UseCount>
-			<tt:Encoding>%s</tt:Encoding>
-			<tt:Bitrate>%d</tt:Bitrate>
-			<tt:SampleRate>%d</tt:SampleRate>
+			<tt:Encoding>%[3]s</tt:Encoding>
+			<tt:Bitrate>%[4]d</tt:Bitrate>
+			<tt:SampleRate>%[5]d</tt:SampleRate>
 			<tt:Multicast>
 				<tt:Address>
 					<tt:Type>IPv4</tt:Type>
@@ -147,141 +201,103 @@ func (h *MediaHandler) renderProfileXML(p config.ProfileConfig, ptz config.PTZCo
 				<tt:AutoStart>false</tt:AutoStart>
 			</tt:Multicast>
 			<tt:SessionTimeout>PT60S</tt:SessionTimeout>
-		</tt:AudioEncoderConfiguration>`,
-			p.Token, p.Token,
-			p.Audio.Codec,
-			p.Audio.BitrateKbps,
-			p.Audio.SampleRate,
-		)
-	}
+		</%[1]s>`,
+		elem, p.Token,
+		onvifAudioEncoding(p.Audio.Codec),
+		p.Audio.BitrateKbps,
+		p.Audio.SampleRate,
+	)
+}
 
-	// PTZ Configuration
-	var ptzConfig string
-	if ptz.Enabled {
-		ptzConfig = fmt.Sprintf(`
-		<tt:PTZConfiguration token="PTZ_%s">
-			<tt:Name>PTZConfig_%s</tt:Name>
-			<tt:UseCount>1</tt:UseCount>
-			<tt:NodeToken>%s</tt:NodeToken>
-		</tt:PTZConfiguration>`,
-			p.Token, p.Token, ptz.NodeToken,
-		)
-	}
-
+// renderProfileXML renders one tt:Profile with the element name elem
+// (trt:Profiles in GetProfiles, trt:Profile in GetProfile).
+func (h *MediaHandler) renderProfileXML(elem string, p config.ProfileConfig, cfg config.Config) string {
+	var buf bytes.Buffer
 	buf.WriteString(fmt.Sprintf(`
-		<trt:Profiles token="%s" fixed="true">
-			<tt:Name>%s</tt:Name>
-			%s
-			%s
-			%s
-			%s
-			%s
-		</trt:Profiles>`,
-		p.Token, p.Name,
-		vsc, asc, vec, aec, ptzConfig,
-	))
-
+		<%s token="%s" fixed="true">
+			<tt:Name>%s</tt:Name>`, elem, p.Token, xmlEscape(p.Name)))
+	buf.WriteString(renderVideoSourceConfigurationXML("tt:VideoSourceConfiguration", p))
+	if p.Audio.Enabled {
+		buf.WriteString(renderAudioSourceConfigurationXML("tt:AudioSourceConfiguration", p))
+	}
+	buf.WriteString(renderVideoEncoderConfigurationXML("tt:VideoEncoderConfiguration", p))
+	if p.Audio.Enabled {
+		buf.WriteString(renderAudioEncoderConfigurationXML("tt:AudioEncoderConfiguration", p))
+	}
+	if cfg.PTZ.Enabled {
+		buf.WriteString(renderPTZConfigurationXML("tt:PTZConfiguration", cfg.PTZ.NodeToken, len(cfg.Profiles)))
+	}
+	buf.WriteString(fmt.Sprintf(`
+		</%s>`, elem))
 	return buf.String()
 }
 
-// HandleGetStreamUri generates response for GetStreamUri.
-func (h *MediaHandler) HandleGetStreamUri(body []byte, host string) string {
-	token := extractTagValue(body, "ProfileToken")
-	cfg := h.cfgMgr.Get()
-	if token == "" && len(cfg.Profiles) > 0 {
-		token = cfg.Profiles[0].Token
-	}
-
-	rtspPort := cfg.Server.RTSPPort
-	streamURI := fmt.Sprintf("rtsp://%s:%d/live/%s", host, rtspPort, token)
-
+func renderMediaURIResponse(action, uri string) string {
 	return fmt.Sprintf(`
-		<trt:GetStreamUriResponse xmlns:trt="%s" xmlns:tt="%s">
+		<trt:%[1]sResponse xmlns:trt="%[2]s" xmlns:tt="%[3]s">
 			<trt:MediaUri>
-				<tt:Uri>%s</tt:Uri>
+				<tt:Uri>%[4]s</tt:Uri>
 				<tt:InvalidAfterConnect>false</tt:InvalidAfterConnect>
 				<tt:InvalidAfterReboot>true</tt:InvalidAfterReboot>
 				<tt:Timeout>PT60S</tt:Timeout>
 			</trt:MediaUri>
-		</trt:GetStreamUriResponse>`,
-		NamespaceMediaWSDL,
-		NamespaceONVIFSchema,
-		streamURI,
+		</trt:%[1]sResponse>`,
+		action, NamespaceMediaWSDL, NamespaceONVIFSchema, uri,
 	)
 }
 
-// HandleGetSnapshotUri generates response for GetSnapshotUri.
-func (h *MediaHandler) HandleGetSnapshotUri(body []byte, host string) string {
-	token := extractTagValue(body, "ProfileToken")
+// HandleGetStreamUri generates response for GetStreamUri.
+func (h *MediaHandler) HandleGetStreamUri(body []byte, host string) (string, error) {
 	cfg := h.cfgMgr.Get()
-	if token == "" && len(cfg.Profiles) > 0 {
-		token = cfg.Profiles[0].Token
+	prof, err := h.lookupProfile(body, cfg)
+	if err != nil {
+		return "", err
 	}
+	return renderMediaURIResponse("GetStreamUri", fmt.Sprintf("rtsp://%s:%d/live/%s", host, cfg.Server.RTSPPort, prof.Token)), nil
+}
 
-	httpPort := cfg.Server.HTTPPort
-	snapshotURI := fmt.Sprintf("http://%s:%d/api/snapshot/%s", host, httpPort, token)
+// HandleGetSnapshotUri generates response for GetSnapshotUri.
+func (h *MediaHandler) HandleGetSnapshotUri(body []byte, host string) (string, error) {
+	cfg := h.cfgMgr.Get()
+	prof, err := h.lookupProfile(body, cfg)
+	if err != nil {
+		return "", err
+	}
+	return renderMediaURIResponse("GetSnapshotUri", fmt.Sprintf("http://%s:%d/api/snapshot/%s", host, cfg.Server.HTTPPort, prof.Token)), nil
+}
 
+// HandleGetVideoSourceConfigurations lists one video source configuration per profile.
+func (h *MediaHandler) HandleGetVideoSourceConfigurations() string {
+	cfg := h.cfgMgr.Get()
+	var b strings.Builder
+	for _, p := range cfg.Profiles {
+		b.WriteString(renderVideoSourceConfigurationXML("trt:Configurations", p))
+	}
 	return fmt.Sprintf(`
-		<trt:GetSnapshotUriResponse xmlns:trt="%s" xmlns:tt="%s">
-			<trt:MediaUri>
-				<tt:Uri>%s</tt:Uri>
-				<tt:InvalidAfterConnect>false</tt:InvalidAfterConnect>
-				<tt:InvalidAfterReboot>true</tt:InvalidAfterReboot>
-				<tt:Timeout>PT60S</tt:Timeout>
-			</trt:MediaUri>
-		</trt:GetSnapshotUriResponse>`,
-		NamespaceMediaWSDL,
-		NamespaceONVIFSchema,
-		snapshotURI,
-	)
+		<trt:GetVideoSourceConfigurationsResponse xmlns:trt="%s" xmlns:tt="%s">%s
+		</trt:GetVideoSourceConfigurationsResponse>`, NamespaceMediaWSDL, NamespaceONVIFSchema, b.String())
+}
+
+// HandleGetVideoSourceConfiguration returns the configuration addressed by ConfigurationToken.
+func (h *MediaHandler) HandleGetVideoSourceConfiguration(body []byte) (string, error) {
+	cfg := h.cfgMgr.Get()
+	p, err := h.profileByConfigToken(body, "VSC_", cfg)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`
+		<trt:GetVideoSourceConfigurationResponse xmlns:trt="%s" xmlns:tt="%s">%s
+		</trt:GetVideoSourceConfigurationResponse>`, NamespaceMediaWSDL, NamespaceONVIFSchema,
+		renderVideoSourceConfigurationXML("trt:Configuration", p)), nil
 }
 
 // HandleGetVideoEncoderConfigurations returns encoder configurations.
 func (h *MediaHandler) HandleGetVideoEncoderConfigurations() string {
 	cfg := h.cfgMgr.Get()
 	var configs strings.Builder
-
 	for _, p := range cfg.Profiles {
-		configs.WriteString(fmt.Sprintf(`
-			<trt:Configurations token="VEC_%s">
-				<tt:Name>VideoEncoderConfig_%s</tt:Name>
-				<tt:UseCount>1</tt:UseCount>
-				<tt:Encoding>%s</tt:Encoding>
-				<tt:Resolution>
-					<tt:Width>%d</tt:Width>
-					<tt:Height>%d</tt:Height>
-				</tt:Resolution>
-				<tt:Quality>%.1f</tt:Quality>
-				<tt:RateControl>
-					<tt:FrameRateLimit>%d</tt:FrameRateLimit>
-					<tt:EncodingInterval>1</tt:EncodingInterval>
-					<tt:BitrateLimit>%d</tt:BitrateLimit>
-				</tt:RateControl>
-				<tt:H264>
-					<tt:GovLength>%d</tt:GovLength>
-					<tt:H264Profile>High</tt:H264Profile>
-				</tt:H264>
-				<tt:Multicast>
-					<tt:Address>
-						<tt:Type>IPv4</tt:Type>
-						<tt:IPv4Address>0.0.0.0</tt:IPv4Address>
-					</tt:Address>
-					<tt:Port>0</tt:Port>
-					<tt:TTL>1</tt:TTL>
-					<tt:AutoStart>false</tt:AutoStart>
-				</tt:Multicast>
-				<tt:SessionTimeout>PT60S</tt:SessionTimeout>
-			</trt:Configurations>`,
-			p.Token, p.Token,
-			p.Video.Codec,
-			p.Video.Resolution.Width, p.Video.Resolution.Height,
-			p.Video.Quality,
-			p.Video.Framerate,
-			p.Video.BitrateLimitKbps,
-			p.Video.GopSize,
-		))
+		configs.WriteString(renderVideoEncoderConfigurationXML("trt:Configurations", p))
 	}
-
 	return fmt.Sprintf(`
 		<trt:GetVideoEncoderConfigurationsResponse xmlns:trt="%s" xmlns:tt="%s">
 			%s
@@ -290,6 +306,51 @@ func (h *MediaHandler) HandleGetVideoEncoderConfigurations() string {
 		NamespaceONVIFSchema,
 		configs.String(),
 	)
+}
+
+// HandleGetVideoEncoderConfiguration returns the configuration addressed by ConfigurationToken.
+func (h *MediaHandler) HandleGetVideoEncoderConfiguration(body []byte) (string, error) {
+	cfg := h.cfgMgr.Get()
+	p, err := h.profileByConfigToken(body, "VEC_", cfg)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`
+		<trt:GetVideoEncoderConfigurationResponse xmlns:trt="%s" xmlns:tt="%s">%s
+		</trt:GetVideoEncoderConfigurationResponse>`, NamespaceMediaWSDL, NamespaceONVIFSchema,
+		renderVideoEncoderConfigurationXML("trt:Configuration", p)), nil
+}
+
+// HandleGetVideoEncoderConfigurationOptions describes the encoder options.
+// MockCam profiles are fixed, so the options mirror the current settings of
+// the addressed profile / configuration (or the first profile when neither is given).
+func (h *MediaHandler) HandleGetVideoEncoderConfigurationOptions(body []byte) (string, error) {
+	cfg := h.cfgMgr.Get()
+	var p config.ProfileConfig
+	var err error
+	if extractTagValue(body, "ConfigurationToken") != "" {
+		p, err = h.profileByConfigToken(body, "VEC_", cfg)
+	} else {
+		p, err = h.lookupProfile(body, cfg)
+	}
+	if err != nil {
+		return "", err
+	}
+	w, hgt, fps := p.Video.Resolution.Width, p.Video.Resolution.Height, p.Video.Framerate
+	return fmt.Sprintf(`
+		<trt:GetVideoEncoderConfigurationOptionsResponse xmlns:trt="%s" xmlns:tt="%s">
+			<trt:Options>
+				<tt:QualityRange><tt:Min>0</tt:Min><tt:Max>100</tt:Max></tt:QualityRange>
+				<tt:H264>
+					<tt:ResolutionsAvailable><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:ResolutionsAvailable>
+					<tt:GovLengthRange><tt:Min>1</tt:Min><tt:Max>300</tt:Max></tt:GovLengthRange>
+					<tt:FrameRateRange><tt:Min>1</tt:Min><tt:Max>%d</tt:Max></tt:FrameRateRange>
+					<tt:EncodingIntervalRange><tt:Min>1</tt:Min><tt:Max>1</tt:Max></tt:EncodingIntervalRange>
+					<tt:H264ProfilesSupported>High</tt:H264ProfilesSupported>
+				</tt:H264>
+			</trt:Options>
+		</trt:GetVideoEncoderConfigurationOptionsResponse>`,
+		NamespaceMediaWSDL, NamespaceONVIFSchema, w, hgt, fps), nil
 }
 
 // HandleGetVideoSources returns the video sources.
@@ -306,7 +367,7 @@ func (h *MediaHandler) HandleGetVideoSources() string {
 
 	return fmt.Sprintf(`
 		<trt:GetVideoSourcesResponse xmlns:trt="%s" xmlns:tt="%s">
-			<trt:VideoSources token="VideoSource_1">
+			<trt:VideoSources token="%s">
 				<tt:Framerate>%d</tt:Framerate>
 				<tt:Resolution>
 					<tt:Width>%d</tt:Width>
@@ -316,8 +377,82 @@ func (h *MediaHandler) HandleGetVideoSources() string {
 		</trt:GetVideoSourcesResponse>`,
 		NamespaceMediaWSDL,
 		NamespaceONVIFSchema,
+		videoSourceToken,
 		framerate, width, height,
 	)
+}
+
+// HandleGetAudioSources returns the audio source when any profile has audio.
+func (h *MediaHandler) HandleGetAudioSources() string {
+	cfg := h.cfgMgr.Get()
+	sources := ""
+	for _, p := range cfg.Profiles {
+		if p.Audio.Enabled {
+			sources = fmt.Sprintf(`
+			<trt:AudioSources token="%s">
+				<tt:Channels>2</tt:Channels>
+			</trt:AudioSources>`, audioSourceToken)
+			break
+		}
+	}
+	return fmt.Sprintf(`
+		<trt:GetAudioSourcesResponse xmlns:trt="%s" xmlns:tt="%s">%s
+		</trt:GetAudioSourcesResponse>`, NamespaceMediaWSDL, NamespaceONVIFSchema, sources)
+}
+
+// HandleGetAudioSourceConfigurations lists audio source configurations of audio-enabled profiles.
+func (h *MediaHandler) HandleGetAudioSourceConfigurations() string {
+	cfg := h.cfgMgr.Get()
+	var b strings.Builder
+	for _, p := range cfg.Profiles {
+		if p.Audio.Enabled {
+			b.WriteString(renderAudioSourceConfigurationXML("trt:Configurations", p))
+		}
+	}
+	return fmt.Sprintf(`
+		<trt:GetAudioSourceConfigurationsResponse xmlns:trt="%s" xmlns:tt="%s">%s
+		</trt:GetAudioSourceConfigurationsResponse>`, NamespaceMediaWSDL, NamespaceONVIFSchema, b.String())
+}
+
+// HandleGetAudioEncoderConfigurations lists audio encoder configurations of audio-enabled profiles.
+func (h *MediaHandler) HandleGetAudioEncoderConfigurations() string {
+	cfg := h.cfgMgr.Get()
+	var b strings.Builder
+	for _, p := range cfg.Profiles {
+		if p.Audio.Enabled {
+			b.WriteString(renderAudioEncoderConfigurationXML("trt:Configurations", p))
+		}
+	}
+	return fmt.Sprintf(`
+		<trt:GetAudioEncoderConfigurationsResponse xmlns:trt="%s" xmlns:tt="%s">%s
+		</trt:GetAudioEncoderConfigurationsResponse>`, NamespaceMediaWSDL, NamespaceONVIFSchema, b.String())
+}
+
+// HandleGetAudioEncoderConfiguration returns the configuration addressed by ConfigurationToken.
+func (h *MediaHandler) HandleGetAudioEncoderConfiguration(body []byte) (string, error) {
+	cfg := h.cfgMgr.Get()
+	p, err := h.profileByConfigToken(body, "AEC_", cfg)
+	if err != nil {
+		return "", err
+	}
+	if !p.Audio.Enabled {
+		return "", senderFault("ter:InvalidArgVal/ter:NoConfig", "Audio is disabled for profile "+p.Token)
+	}
+	return fmt.Sprintf(`
+		<trt:GetAudioEncoderConfigurationResponse xmlns:trt="%s" xmlns:tt="%s">%s
+		</trt:GetAudioEncoderConfigurationResponse>`, NamespaceMediaWSDL, NamespaceONVIFSchema,
+		renderAudioEncoderConfigurationXML("trt:Configuration", p)), nil
+}
+
+// HandleGetServiceCapabilities reports the Media service capabilities.
+func (h *MediaHandler) HandleGetServiceCapabilities() string {
+	return fmt.Sprintf(`
+		<trt:GetServiceCapabilitiesResponse xmlns:trt="%s">
+			<trt:Capabilities SnapshotUri="true" Rotation="false" VideoSourceMode="false" OSD="false">
+				<trt:ProfileCapabilities MaximumNumberOfProfiles="16"/>
+				<trt:StreamingCapabilities RTPMulticast="false" RTP_TCP="true" RTP_RTSP_TCP="true" NonAggregateControl="false"/>
+			</trt:Capabilities>
+		</trt:GetServiceCapabilitiesResponse>`, NamespaceMediaWSDL)
 }
 
 func extractTagValue(xmlData []byte, tagName string) string {
@@ -331,7 +466,7 @@ func extractTagValue(xmlData []byte, tagName string) string {
 			if se.Name.Local == tagName {
 				var val string
 				_ = decoder.DecodeElement(&val, &se)
-				return val
+				return strings.TrimSpace(val)
 			}
 		}
 	}

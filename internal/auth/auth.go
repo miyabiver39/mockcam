@@ -92,13 +92,16 @@ func (a *Authenticator) CheckHTTP(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-func (a *Authenticator) sendUnauthorized(w http.ResponseWriter) {
-	cfg := a.cfgManager.Get()
-	if cfg.Server.AuthType == "basic" {
-		w.Header().Set("WWW-Authenticate", `Basic realm="`+a.realm+`"`)
-	} else {
-		w.Header().Set("WWW-Authenticate", a.digestMgr.ChallengeHeader())
+// Challenge returns the WWW-Authenticate value for the configured auth type.
+func (a *Authenticator) Challenge() string {
+	if a.cfgManager.Get().Server.AuthType == "basic" {
+		return `Basic realm="` + a.realm + `"`
 	}
+	return a.digestMgr.ChallengeHeader()
+}
+
+func (a *Authenticator) sendUnauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", a.Challenge())
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte("401 Unauthorized\n"))
 }

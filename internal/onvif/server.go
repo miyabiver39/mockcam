@@ -3,6 +3,7 @@ package onvif
 import (
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -23,6 +24,8 @@ type Server struct {
 	ptz           *PTZController
 	deviceHandler *DeviceHandler
 	mediaHandler  *MediaHandler
+	ptzHandler    *PTZHandler
+	now           func() time.Time
 }
 
 // NewServer creates a new ONVIF SOAP Server.
@@ -33,6 +36,8 @@ func NewServer(cfgMgr *config.Manager, authenticator *auth.Authenticator, ptz *P
 		ptz:           ptz,
 		deviceHandler: NewDeviceHandler(cfgMgr),
 		mediaHandler:  NewMediaHandler(cfgMgr),
+		ptzHandler:    NewPTZHandler(cfgMgr, ptz),
+		now:           time.Now,
 	}
 }
 
@@ -43,6 +48,29 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/onvif/ptz_service", s.handlePTZService)
 }
 
+// preAuthDeviceActions may be called without credentials. ONVIF clients use
+// GetSystemDateAndTime to synchronise their clock before they can build a
+// WS-UsernameToken, and GetCapabilities to locate the other services.
+var preAuthDeviceActions = map[string]bool{
+	"GetSystemDateAndTime": true,
+	"GetCapabilities":      true,
+}
+
+// soapFault is an ONVIF-style SOAP 1.2 fault: env:Sender / env:Receiver with a
+// ter:* subcode. It is returned by handlers that validate request arguments.
+type soapFault struct {
+	status  int
+	code    string // "Sender" or "Receiver"
+	subcode string // e.g. "ter:NoProfile"
+	reason  string
+}
+
+func (f *soapFault) Error() string { return f.subcode + ": " + f.reason }
+
+func senderFault(subcode, reason string) *soapFault {
+	return &soapFault{status: http.StatusBadRequest, code: "Sender", subcode: subcode, reason: reason}
+}
+
 func (s *Server) getRequestHost(r *http.Request) string {
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
@@ -51,201 +79,231 @@ func (s *Server) getRequestHost(r *http.Request) string {
 	return host
 }
 
-func (s *Server) handleDeviceService(w http.ResponseWriter, r *http.Request) {
+// authorize enforces the configured authentication on a SOAP request. It
+// accepts HTTP Basic/Digest (Authorization header) as well as a WS-Security
+// UsernameToken in the SOAP header, which is what ONVIF clients send. Without
+// any credentials it answers 401 with a WWW-Authenticate challenge (so HTTP
+// clients retry) and a ter:NotAuthorized fault body (so SOAP clients get XML).
+func (s *Server) authorize(w http.ResponseWriter, r *http.Request, body []byte) bool {
+	if !auth.IsAuthEnabled(s.cfgMgr.Get().Server.AuthType) {
+		return true
+	}
+	if r.Header.Get("Authorization") != "" {
+		return s.auth.CheckHTTP(w, r)
+	}
+	if tok, ok := auth.ParseUsernameToken(body); ok {
+		if s.auth.ValidateUsernameToken(tok, s.now()) {
+			return true
+		}
+		log.Printf("[onvif] Rejected WS-UsernameToken for user %q from %s", tok.Username, r.RemoteAddr)
+		s.writeSOAPFault(w, http.StatusBadRequest, "Sender", "ter:NotAuthorized", "The credentials in the WS-UsernameToken are not valid")
+		return false
+	}
+	w.Header().Set("WWW-Authenticate", s.auth.Challenge())
+	s.writeSOAPFault(w, http.StatusUnauthorized, "Sender", "ter:NotAuthorized", "Authentication required (HTTP Basic/Digest or WS-UsernameToken)")
+	return false
+}
+
+// readRequest validates the method, reads the envelope and resolves the action.
+func (s *Server) readRequest(w http.ResponseWriter, r *http.Request) (body []byte, action string, ok bool) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
+		return nil, "", false
 	}
-
 	body, action, err := s.readSOAPRequest(r)
 	if err != nil {
-		s.writeSOAPFault(w, "Sender", "Invalid XML: "+err.Error())
+		s.writeSOAPFault(w, http.StatusBadRequest, "Sender", "ter:WellFormed", "Invalid XML: "+err.Error())
+		return nil, "", false
+	}
+	return body, action, true
+}
+
+// finish writes either the handler's response or the fault it returned.
+func (s *Server) finish(w http.ResponseWriter, service, action, respXML string, err error) {
+	var f *soapFault
+	switch {
+	case err == nil:
+		s.writeSOAPResponse(w, respXML)
+	case errors.As(err, &f):
+		s.writeSOAPFault(w, f.status, f.code, f.subcode, f.reason)
+	default:
+		log.Printf("[onvif] %s %s failed: %v", service, action, err)
+		s.writeSOAPFault(w, http.StatusInternalServerError, "Receiver", "ter:Action", err.Error())
+	}
+}
+
+func (s *Server) notSupported(w http.ResponseWriter, service, action string) {
+	log.Printf("[onvif] Unhandled %s action: %s", service, action)
+	s.writeSOAPFault(w, http.StatusInternalServerError, "Receiver", "ter:ActionNotSupported", "Action not supported: "+action)
+}
+
+func (s *Server) handleDeviceService(w http.ResponseWriter, r *http.Request) {
+	body, action, ok := s.readRequest(w, r)
+	if !ok {
 		return
 	}
-
-	// For sensitive calls, verify auth
-	if action != "GetSystemDateAndTime" && action != "GetCapabilities" {
-		if !s.auth.CheckHTTP(w, r) {
-			return
-		}
+	if !preAuthDeviceActions[action] && !s.authorize(w, r, body) {
+		return
 	}
 
 	host := s.getRequestHost(r)
+	h := s.deviceHandler
 	var respXML string
 
 	switch action {
 	case "GetDeviceInformation":
-		respXML = s.deviceHandler.HandleGetDeviceInformation()
+		respXML = h.HandleGetDeviceInformation()
 	case "GetSystemDateAndTime":
-		respXML = s.deviceHandler.HandleGetSystemDateAndTime()
+		respXML = h.HandleGetSystemDateAndTime()
 	case "GetCapabilities":
-		respXML = s.deviceHandler.HandleGetCapabilities(host)
+		respXML = h.HandleGetCapabilities(host)
 	case "GetServices":
-		respXML = s.deviceHandler.HandleGetServices(host)
+		respXML = h.HandleGetServices(host)
+	case "GetServiceCapabilities":
+		respXML = h.HandleGetServiceCapabilities()
 	case "GetScopes":
-		respXML = s.deviceHandler.HandleGetScopes()
+		respXML = h.HandleGetScopes()
 	case "GetHostname":
-		respXML = s.deviceHandler.HandleGetHostname()
+		respXML = h.HandleGetHostname()
+	case "GetNetworkInterfaces":
+		respXML = h.HandleGetNetworkInterfaces(host)
+	case "GetNetworkProtocols":
+		respXML = h.HandleGetNetworkProtocols()
+	case "GetDNS":
+		respXML = h.HandleGetDNS()
+	case "GetNTP":
+		respXML = h.HandleGetNTP()
+	case "GetDiscoveryMode":
+		respXML = h.HandleGetDiscoveryMode()
+	case "GetUsers":
+		respXML = h.HandleGetUsers()
+	case "GetWsdlUrl":
+		respXML = h.HandleGetWsdlUrl()
 	default:
-		log.Printf("[onvif] Unhandled device action: %s", action)
-		s.writeSOAPFault(w, "ActionNotSupported", "Action not supported: "+action)
+		s.notSupported(w, "device", action)
 		return
 	}
-
-	s.writeSOAPResponse(w, respXML)
-	_ = body
+	s.finish(w, "device", action, respXML, nil)
 }
 
 func (s *Server) handleMediaService(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	body, action, ok := s.readRequest(w, r)
+	if !ok {
 		return
 	}
-
-	if !s.auth.CheckHTTP(w, r) {
-		return
-	}
-
-	body, action, err := s.readSOAPRequest(r)
-	if err != nil {
-		s.writeSOAPFault(w, "Sender", "Invalid XML: "+err.Error())
+	if !s.authorize(w, r, body) {
 		return
 	}
 
 	host := s.getRequestHost(r)
+	h := s.mediaHandler
 	var respXML string
+	var err error
 
 	switch action {
 	case "GetProfiles":
-		respXML = s.mediaHandler.HandleGetProfiles()
+		respXML = h.HandleGetProfiles()
 	case "GetProfile":
-		respXML = s.mediaHandler.HandleGetProfile(body)
+		respXML, err = h.HandleGetProfile(body)
 	case "GetStreamUri":
-		respXML = s.mediaHandler.HandleGetStreamUri(body, host)
+		respXML, err = h.HandleGetStreamUri(body, host)
 	case "GetSnapshotUri":
-		respXML = s.mediaHandler.HandleGetSnapshotUri(body, host)
-	case "GetVideoEncoderConfigurations":
-		respXML = s.mediaHandler.HandleGetVideoEncoderConfigurations()
+		respXML, err = h.HandleGetSnapshotUri(body, host)
 	case "GetVideoSources":
-		respXML = s.mediaHandler.HandleGetVideoSources()
+		respXML = h.HandleGetVideoSources()
+	case "GetVideoSourceConfigurations":
+		respXML = h.HandleGetVideoSourceConfigurations()
+	case "GetVideoSourceConfiguration":
+		respXML, err = h.HandleGetVideoSourceConfiguration(body)
+	case "GetVideoEncoderConfigurations":
+		respXML = h.HandleGetVideoEncoderConfigurations()
+	case "GetVideoEncoderConfiguration":
+		respXML, err = h.HandleGetVideoEncoderConfiguration(body)
+	case "GetVideoEncoderConfigurationOptions":
+		respXML, err = h.HandleGetVideoEncoderConfigurationOptions(body)
+	case "GetAudioSources":
+		respXML = h.HandleGetAudioSources()
+	case "GetAudioSourceConfigurations":
+		respXML = h.HandleGetAudioSourceConfigurations()
+	case "GetAudioEncoderConfigurations":
+		respXML = h.HandleGetAudioEncoderConfigurations()
+	case "GetAudioEncoderConfiguration":
+		respXML, err = h.HandleGetAudioEncoderConfiguration(body)
+	case "GetServiceCapabilities":
+		respXML = h.HandleGetServiceCapabilities()
 	default:
-		log.Printf("[onvif] Unhandled media action: %s", action)
-		s.writeSOAPFault(w, "ActionNotSupported", "Action not supported: "+action)
+		s.notSupported(w, "media", action)
 		return
 	}
-
-	s.writeSOAPResponse(w, respXML)
+	s.finish(w, "media", action, respXML, err)
 }
 
 func (s *Server) handlePTZService(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	body, action, ok := s.readRequest(w, r)
+	if !ok {
+		return
+	}
+	if !s.authorize(w, r, body) {
 		return
 	}
 
-	if !s.auth.CheckHTTP(w, r) {
-		return
-	}
-
-	body, action, err := s.readSOAPRequest(r)
-	if err != nil {
-		s.writeSOAPFault(w, "Sender", "Invalid XML: "+err.Error())
-		return
-	}
-
+	h := s.ptzHandler
 	var respXML string
+	var err error
 
 	switch action {
 	case "GetStatus":
-		pan, tilt, zoom, moving := s.ptz.GetStatus()
-		moveStatus := "IDLE"
-		if moving {
-			moveStatus = "MOVING"
-		}
-		respXML = fmt.Sprintf(`
-			<tptz:GetStatusResponse xmlns:tptz="%s" xmlns:tt="%s">
-				<tptz:PTZStatus>
-					<tt:Position>
-						<tt:PanTilt x="%.4f" y="%.4f" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/PositionGenericSpace" />
-						<tt:Zoom x="%.4f" space="http://www.onvif.org/ver10/tptz/ZoomSpaces/PositionGenericSpace" />
-					</tt:Position>
-					<tt:MoveStatus>
-						<tt:PanTilt>%s</tt:PanTilt>
-						<tt:Zoom>%s</tt:Zoom>
-					</tt:MoveStatus>
-					<tt:UtcTime>%s</tt:UtcTime>
-				</tptz:PTZStatus>
-			</tptz:GetStatusResponse>`,
-			NamespacePTZWSDL,
-			NamespaceONVIFSchema,
-			pan, tilt, zoom,
-			moveStatus, moveStatus,
-			time.Now().UTC().Format(time.RFC3339),
-		)
-
+		respXML = h.HandleGetStatus(s.now())
 	case "ContinuousMove":
-		velX, velY, velZ := parsePTZCoords(body, "Velocity")
-		s.ptz.ContinuousMove(velX, velY, velZ)
-		respXML = fmt.Sprintf(`<tptz:ContinuousMoveResponse xmlns:tptz="%s" />`, NamespacePTZWSDL)
-
+		respXML = h.HandleContinuousMove(body)
 	case "AbsoluteMove":
-		posX, posY, posZ := parsePTZCoords(body, "Position")
-		s.ptz.AbsoluteMove(posX, posY, posZ)
-		respXML = fmt.Sprintf(`<tptz:AbsoluteMoveResponse xmlns:tptz="%s" />`, NamespacePTZWSDL)
-
+		respXML = h.HandleAbsoluteMove(body)
+	case "RelativeMove":
+		respXML = h.HandleRelativeMove(body)
 	case "Stop":
-		s.ptz.Stop()
-		respXML = fmt.Sprintf(`<tptz:StopResponse xmlns:tptz="%s" />`, NamespacePTZWSDL)
-
+		respXML = h.HandleStop()
+	case "GotoHomePosition":
+		respXML = h.HandleGotoHomePosition()
+	case "SetHomePosition":
+		respXML = h.HandleSetHomePosition()
+	case "GetPresets":
+		respXML = h.HandleGetPresets()
+	case "SetPreset":
+		respXML, err = h.HandleSetPreset(body)
+	case "GotoPreset":
+		respXML, err = h.HandleGotoPreset(body)
+	case "RemovePreset":
+		respXML, err = h.HandleRemovePreset(body)
 	case "GetNodes":
-		cfg := s.cfgMgr.Get()
-		respXML = fmt.Sprintf(`
-			<tptz:GetNodesResponse xmlns:tptz="%s" xmlns:tt="%s">
-				<tptz:PTZNode token="%s">
-					<tt:Name>PTZNode_1</tt:Name>
-					<tt:SupportedPTZSpaces>
-						<tt:AbsolutePanTiltPositionSpace>
-							<tt:URI>http://www.onvif.org/ver10/tptz/PanTiltSpaces/PositionGenericSpace</tt:URI>
-							<tt:XRange><tt:Min>-1.0</tt:Min><tt:Max>1.0</tt:Max></tt:XRange>
-							<tt:YRange><tt:Min>-1.0</tt:Min><tt:Max>1.0</tt:Max></tt:YRange>
-						</tt:AbsolutePanTiltPositionSpace>
-						<tt:AbsoluteZoomPositionSpace>
-							<tt:URI>http://www.onvif.org/ver10/tptz/ZoomSpaces/PositionGenericSpace</tt:URI>
-							<tt:XRange><tt:Min>0.0</tt:Min><tt:Max>1.0</tt:Max></tt:XRange>
-						</tt:AbsoluteZoomPositionSpace>
-					</tt:SupportedPTZSpaces>
-					<tt:MaximumNumberOfPresets>10</tt:MaximumNumberOfPresets>
-					<tt:HomeSupported>true</tt:HomeSupported>
-				</tptz:PTZNode>
-			</tptz:GetNodesResponse>`,
-			NamespacePTZWSDL, NamespaceONVIFSchema, cfg.PTZ.NodeToken,
-		)
-
+		respXML = h.HandleGetNodes()
+	case "GetNode":
+		respXML, err = h.HandleGetNode(body)
 	case "GetConfigurations":
-		cfg := s.cfgMgr.Get()
-		respXML = fmt.Sprintf(`
-			<tptz:GetConfigurationsResponse xmlns:tptz="%s" xmlns:tt="%s">
-				<tptz:PTZConfiguration token="PTZ_Profile_1">
-					<tt:Name>PTZConfig</tt:Name>
-					<tt:UseCount>1</tt:UseCount>
-					<tt:NodeToken>%s</tt:NodeToken>
-				</tptz:PTZConfiguration>
-			</tptz:GetConfigurationsResponse>`,
-			NamespacePTZWSDL, NamespaceONVIFSchema, cfg.PTZ.NodeToken,
-		)
-
+		respXML = h.HandleGetConfigurations()
+	case "GetConfiguration":
+		respXML, err = h.HandleGetConfiguration(body)
+	case "GetConfigurationOptions":
+		respXML, err = h.HandleGetConfigurationOptions(body)
+	case "GetServiceCapabilities":
+		respXML = h.HandleGetServiceCapabilities()
 	default:
-		log.Printf("[onvif] Unhandled PTZ action: %s", action)
-		s.writeSOAPFault(w, "ActionNotSupported", "Action not supported: "+action)
+		s.notSupported(w, "ptz", action)
 		return
 	}
-
-	s.writeSOAPResponse(w, respXML)
+	s.finish(w, "ptz", action, respXML, err)
 }
 
-func parsePTZCoords(data []byte, parentTag string) (float64, float64, float64) {
+// parsePTZCoords returns the x/y of the PanTilt element and x of the Zoom
+// element found under parentTag (Position, Velocity or Translation).
+func parsePTZCoords(data []byte, parentTag string) (pan, tilt, zoom float64) {
+	pan, tilt, zoom, _, _ = parsePTZVector(data, parentTag)
+	return pan, tilt, zoom
+}
+
+// parsePTZVector is parsePTZCoords that also reports whether the PanTilt and
+// Zoom elements were present, so callers can distinguish "0" from "omitted".
+func parsePTZVector(data []byte, parentTag string) (pan, tilt, zoom float64, hasPanTilt, hasZoom bool) {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
-	var pan, tilt, zoom float64
 	inParent := false
 
 	for {
@@ -260,6 +318,7 @@ func parsePTZCoords(data []byte, parentTag string) (float64, float64, float64) {
 			}
 			if inParent {
 				if elem.Name.Local == "PanTilt" {
+					hasPanTilt = true
 					for _, a := range elem.Attr {
 						if a.Name.Local == "x" {
 							pan, _ = strconv.ParseFloat(a.Value, 64)
@@ -268,6 +327,7 @@ func parsePTZCoords(data []byte, parentTag string) (float64, float64, float64) {
 						}
 					}
 				} else if elem.Name.Local == "Zoom" {
+					hasZoom = true
 					for _, a := range elem.Attr {
 						if a.Name.Local == "x" {
 							zoom, _ = strconv.ParseFloat(a.Value, 64)
@@ -281,46 +341,52 @@ func parsePTZCoords(data []byte, parentTag string) (float64, float64, float64) {
 			}
 		}
 	}
-	return pan, tilt, zoom
+	return pan, tilt, zoom, hasPanTilt, hasZoom
 }
 
+// readSOAPRequest reads the envelope and resolves the action name from the
+// first element inside the SOAP Body. The SOAPAction header / Content-Type
+// action parameter is only a fallback: several ONVIF WSDLs declare
+// malformed soapAction URIs (e.g. ".../wsdlGetVideoSources/"), so the body
+// element is the reliable source.
 func (s *Server) readSOAPRequest(r *http.Request) ([]byte, string, error) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		return nil, "", err
 	}
 
-	// 1. Check SOAPAction header
-	soapAction := r.Header.Get("SOAPAction")
-	if soapAction != "" {
-		soapAction = strings.Trim(soapAction, `"`)
-		if slashIdx := strings.LastIndex(soapAction, "/"); slashIdx != -1 {
-			return body, soapAction[slashIdx+1:], nil
-		}
-		return body, soapAction, nil
+	if action := bodyAction(body); action != "" {
+		return body, action, nil
 	}
 
-	// 2. Parse XML to detect Body element root tag
+	soapAction := strings.Trim(strings.TrimSpace(r.Header.Get("SOAPAction")), `"`)
+	soapAction = strings.TrimRight(soapAction, "/")
+	if idx := strings.LastIndex(soapAction, "/"); idx != -1 {
+		soapAction = soapAction[idx+1:]
+	}
+	return body, soapAction, nil
+}
+
+// bodyAction returns the local name of the first element inside the SOAP
+// Body, or "" when the envelope has none.
+func bodyAction(body []byte) string {
 	decoder := xml.NewDecoder(bytes.NewReader(body))
 	inBody := false
 	for {
 		t, err := decoder.Token()
 		if err != nil {
-			break
+			return ""
 		}
-		switch elem := t.(type) {
-		case xml.StartElement:
+		if elem, ok := t.(xml.StartElement); ok {
 			if elem.Name.Local == "Body" {
 				inBody = true
 				continue
 			}
 			if inBody {
-				return body, elem.Name.Local, nil
+				return elem.Name.Local
 			}
 		}
 	}
-
-	return body, "", nil
 }
 
 func (s *Server) writeSOAPResponse(w http.ResponseWriter, innerXML string) {
@@ -340,22 +406,46 @@ func (s *Server) writeSOAPResponse(w http.ResponseWriter, innerXML string) {
 	_, _ = w.Write([]byte(envelope))
 }
 
-func (s *Server) writeSOAPFault(w http.ResponseWriter, code, reason string) {
+// writeSOAPFault emits a SOAP 1.2 fault. code is "Sender" or "Receiver";
+// subcode is an ONVIF error code such as "ter:NotAuthorized". A two-level
+// code such as "ter:InvalidArgVal/ter:NoProfile" is rendered as nested
+// Subcode elements, as the ONVIF core specification requires.
+func (s *Server) writeSOAPFault(w http.ResponseWriter, status int, code, subcode, reason string) {
 	fault := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<s:Envelope xmlns:s="%s">
+<s:Envelope xmlns:s="%s" xmlns:ter="%s">
 	<s:Body>
 		<s:Fault>
-			<s:Code><s:Value>s:%s</s:Value></s:Code>
+			<s:Code>
+				<s:Value>s:%s</s:Value>
+				%s
+			</s:Code>
 			<s:Reason><s:Text xml:lang="en">%s</s:Text></s:Reason>
 		</s:Fault>
 	</s:Body>
 </s:Envelope>`,
 		NamespaceSOAPEnv,
+		NamespaceONVIFError,
 		code,
-		reason,
+		renderSubcodes(strings.Split(subcode, "/")),
+		xmlEscape(reason),
 	)
 
 	w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
-	w.WriteHeader(http.StatusInternalServerError)
+	w.WriteHeader(status)
 	_, _ = w.Write([]byte(fault))
+}
+
+// renderSubcodes nests the given codes as s:Subcode elements.
+func renderSubcodes(codes []string) string {
+	if len(codes) == 0 || codes[0] == "" {
+		return ""
+	}
+	return "<s:Subcode><s:Value>" + xmlEscape(codes[0]) + "</s:Value>" + renderSubcodes(codes[1:]) + "</s:Subcode>"
+}
+
+// xmlEscape escapes s for use as XML text or attribute content.
+func xmlEscape(s string) string {
+	var buf bytes.Buffer
+	_ = xml.EscapeText(&buf, []byte(s))
+	return buf.String()
 }

@@ -8,7 +8,8 @@ info:
     This document describes the **management API** served on the HTTP port (default `8080`).
 
     * The management API does not require authentication. RTSP and the ONVIF SOAP services honour
-      `server.auth_type` (Digest / Basic / none).
+      `server.auth_type` (Digest / Basic / none); the SOAP services additionally accept a
+      WS-Security UsernameToken (PasswordDigest / PasswordText) in the SOAP header.
     * Request bodies are JSON, at most 1 MiB, and **unknown fields are rejected with `400`** so that
       typos in setting names are surfaced.
     * Errors use the `Error` schema: `{"error": "<message>"}`.

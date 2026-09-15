@@ -15,6 +15,8 @@ const (
 	NamespaceDeviceWSDL  = "http://www.onvif.org/ver10/device/wsdl"
 	NamespaceMediaWSDL   = "http://www.onvif.org/ver10/media/wsdl"
 	NamespacePTZWSDL     = "http://www.onvif.org/ver20/ptz/wsdl"
+	NamespaceNetworkWSDL = "http://www.onvif.org/ver10/network/wsdl"
+	NamespaceONVIFError  = "http://www.onvif.org/ver10/error"
 )
 
 // SOAPEnvelope represents a generic SOAP envelope for parsing.
@@ -87,6 +89,8 @@ type ProbeMatchesEnvelope struct {
 	SoapAttr string   `xml:"xmlns:soap,attr"`
 	WsaAttr  string   `xml:"xmlns:wsa,attr"`
 	DAttr    string   `xml:"xmlns:d,attr"`
+	DnAttr   string   `xml:"xmlns:dn,attr"`
+	TdsAttr  string   `xml:"xmlns:tds,attr"`
 	Header   struct {
 		WsaAction    string `xml:"wsa:Action"`
 		WsaMessageID string `xml:"wsa:MessageID"`

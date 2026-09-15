@@ -144,6 +144,9 @@ func BuildProbeMatches(probe []byte, localIP string, cfg config.Config) ([]byte,
 		SoapAttr: "http://www.w3.org/2003/05/soap-envelope",
 		WsaAttr:  "http://schemas.xmlsoap.org/ws/2004/08/addressing",
 		DAttr:    "http://schemas.xmlsoap.org/ws/2005/04/discovery",
+		// Types uses the dn:/tds: prefixes, so both must be declared.
+		DnAttr:  NamespaceNetworkWSDL,
+		TdsAttr: NamespaceDeviceWSDL,
 	}
 	resp.Header.WsaAction = "http://schemas.xmlsoap.org/ws/2005/04/discovery/ProbeMatches"
 	resp.Header.WsaMessageID = fmt.Sprintf("urn:uuid:%s", uuid.New().String())
@@ -161,7 +164,7 @@ func BuildProbeMatches(probe []byte, localIP string, cfg config.Config) ([]byte,
 		XAddrs:          xAddr,
 		MetadataVersion: 1,
 	}
-	item.EndpointReference.Address = fmt.Sprintf("urn:uuid:%s", cfg.Server.DeviceInfo.SerialNumber)
+	item.EndpointReference.Address = "urn:uuid:" + DeviceUUID(cfg.Server.DeviceInfo.SerialNumber)
 	resp.Body.ProbeMatches.ProbeMatch = []ProbeMatchItem{item}
 
 	respBytes, err := xml.MarshalIndent(resp, "", "  ")
@@ -169,6 +172,13 @@ func BuildProbeMatches(probe []byte, localIP string, cfg config.Config) ([]byte,
 		return nil, err
 	}
 	return append([]byte(xml.Header), respBytes...), nil
+}
+
+// DeviceUUID derives the stable WS-Discovery endpoint UUID (RFC 4122 v5)
+// from the configured serial number, so the address is a real UUID and
+// survives restarts.
+func DeviceUUID(serial string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("mockcam:"+serial)).String()
 }
 
 func getOutboundIP(dest net.IP) string {

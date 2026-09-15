@@ -1,7 +1,9 @@
 package onvif
 
 import (
+	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +20,9 @@ type PTZController struct {
 	velTilt   float64
 	velZoom   float64
 	isMoving  bool
+	homePan   float64
+	homeTilt  float64
+	homeZoom  float64
 	stopChan  chan struct{}
 	listeners []func(pan, tilt, zoom float64)
 	mu        sync.RWMutex
@@ -82,6 +87,101 @@ func (c *PTZController) AbsoluteMove(pan, tilt, zoom float64) {
 	c.isMoving = false
 
 	c.notifyListenersLocked()
+}
+
+// RelativeMove shifts the current position by the given translation and
+// clamps the result to the coordinate space.
+func (c *PTZController) RelativeMove(dPan, dTilt, dZoom float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.stopContinuousMoveLocked()
+
+	c.pan = clamp(c.pan+dPan, -1.0, 1.0)
+	c.tilt = clamp(c.tilt+dTilt, -1.0, 1.0)
+	c.zoom = clamp(c.zoom+dZoom, 0.0, 1.0)
+	c.isMoving = false
+
+	c.notifyListenersLocked()
+}
+
+// SetHome records the current position as the home position (kept in memory).
+func (c *PTZController) SetHome() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.homePan, c.homeTilt, c.homeZoom = c.pan, c.tilt, c.zoom
+}
+
+// GotoHome moves to the home position (pan/tilt/zoom 0 until SetHome is called).
+func (c *PTZController) GotoHome() {
+	c.mu.RLock()
+	pan, tilt, zoom := c.homePan, c.homeTilt, c.homeZoom
+	c.mu.RUnlock()
+	c.AbsoluteMove(pan, tilt, zoom)
+}
+
+// Presets lists the presets persisted in settings.json (never nil).
+func (c *PTZController) Presets() []config.PTZPreset {
+	presets := c.cfgMgr.Get().PTZ.Presets
+	if presets == nil {
+		presets = []config.PTZPreset{}
+	}
+	return presets
+}
+
+// SavePreset stores the current position under name and persists the list.
+// An empty name is auto-generated; an existing preset with the same name is
+// overwritten. The preset name doubles as the ONVIF preset token.
+func (c *PTZController) SavePreset(name string) ([]config.PTZPreset, error) {
+	presets := c.Presets()
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = fmt.Sprintf("Preset_%d", len(presets)+1)
+	}
+	pan, tilt, zoom, _ := c.GetStatus()
+	p := config.PTZPreset{Name: name, Pan: pan, Tilt: tilt, Zoom: zoom}
+
+	replaced := false
+	for i := range presets {
+		if presets[i].Name == name {
+			presets[i] = p
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		presets = append(presets, p)
+	}
+	if err := c.cfgMgr.UpdatePTZPresets(presets); err != nil {
+		return nil, err
+	}
+	return presets, nil
+}
+
+// GotoPreset moves to the named preset. ok is false when it does not exist.
+func (c *PTZController) GotoPreset(name string) (config.PTZPreset, bool) {
+	for _, p := range c.Presets() {
+		if p.Name == strings.TrimSpace(name) {
+			c.AbsoluteMove(p.Pan, p.Tilt, p.Zoom)
+			return p, true
+		}
+	}
+	return config.PTZPreset{}, false
+}
+
+// DeletePreset removes the named preset (no error when it does not exist).
+func (c *PTZController) DeletePreset(name string) ([]config.PTZPreset, error) {
+	name = strings.TrimSpace(name)
+	filtered := make([]config.PTZPreset, 0)
+	for _, p := range c.Presets() {
+		if p.Name != name {
+			filtered = append(filtered, p)
+		}
+	}
+	if err := c.cfgMgr.UpdatePTZPresets(filtered); err != nil {
+		return nil, err
+	}
+	return filtered, nil
 }
 
 // ContinuousMove starts continuous movement with velocity vector.

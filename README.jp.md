@@ -33,11 +33,12 @@ Go による完全静的リンクバイナリと `gortsplib/v5` による 1:N �
   * 日本語は Open JTalk（tohoku-f01 女声）、英語は espeak-ng / Windows SAPI で合成。10 秒ごとに次の時刻を読み上げ、毎秒「ピ・ポ・ピ・ポ・ピ・ポ・ピ・ピ・ピ／」（880/440 Hz のピップ、880 Hz のマーク音）を鳴らします（放送規格の再現ではなく、聞き心地を優先したデザイン）。
 * **📡 ONVIF Profile S 完全準拠**:
   * **WS-Discovery**: UDP 3702（マルチキャスト `239.255.255.250`）による自動検出に対応。
-  * **SOAP サービス群**: Device Service、Media Service、PTZ Service を規格に準拠して実装。
+  * **SOAP サービス群**: Device / Media / PTZ Service（`GetDeviceInformation`、`GetCapabilities`、`GetServices`、`GetNetworkInterfaces`、`GetProfiles`、`GetStreamUri`、`GetSnapshotUri`、エンコーダー/ソース設定、PTZ 移動・ホーム・プリセットなど）。
+  * **WS-Security UsernameToken**（PasswordDigest / PasswordText）に対応。ONVIF Device Manager や VMS/NVR、`onvif-zeep` が送る SOAP ヘッダー認証を HTTP Basic / Digest と併用できます。
 * **🧭 リアルタイム PTZ 仮想ステートマシン**:
   * メモリ上で Pan/Tilt/Zoom 座標を管理。VMS からの PTZ 操作や Web UI からの操作をリアルタイムに処理。
   * Web ダッシュボード上の SVG レーダー画面と WebSocket（`/ws`）で双方向リアルタイム同期。
-  * PTZ プリセットの保存・呼び出し（`settings.json` に永続化）。
+  * PTZ プリセットの保存・呼び出し（`settings.json` に永続化。REST API / MCP / ONVIF `SetPreset` / `GotoPreset` で共有）。
 * **💻 ビルドステップ不要の埋め込み Web ダッシュボード**:
   * Go の `embed` 機能により、単一バイナリ内に Tailwind CSS + Alpine.js ダッシュボードを完全内包。
   * ライブ診断ログ（FFmpeg の stderr を含む）、接続中 RTSP クライアント一覧、設定のエクスポート / ファクトリーリセット、診断情報の一括エクスポート、サードパーティライセンス表示に対応。
@@ -140,7 +141,8 @@ ffplay http://localhost:8080/api/mjpeg/Profile_1
    ```text
    http://<Host-IP>:8080/onvif/device_service
    ```
-4. 認証: ユーザー名 `admin`、パスワード `admin1234`。`GetSnapshotUri` は上記の JPEG エンドポイントを返します。
+4. 認証: ユーザー名 `admin`、パスワード `admin1234`。SOAP ヘッダーの WS-Security UsernameToken（ODM や多くの VMS が使用）と HTTP Basic / Digest のどちらでも認証できます。`GetSnapshotUri` は上記の JPEG エンドポイントを返します。
+5. `PasswordDigest` トークンはクライアントと MockCam の時刻差が 5 分以内である必要があります。`GetSystemDateAndTime` は認証不要なので、クライアントはまず時刻を同期できます。
 
 ### 5. MCP（AI エージェント）
 

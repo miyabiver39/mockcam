@@ -35,22 +35,32 @@ func postSOAP(t *testing.T, srv *Server, path, body string, withAuth bool) *http
 func TestReadSOAPRequestActionDetection(t *testing.T) {
 	srv, _, _ := setupTestServer(t)
 
-	// 1. SOAPAction header wins, with or without quotes.
+	// 1. The first Body child element wins, even when a (possibly malformed)
+	// SOAPAction header is present.
 	req := httptest.NewRequest("POST", "/onvif/device_service", strings.NewReader(soapEnvelope(`<tds:GetScopes xmlns:tds="x"/>`)))
 	req.Header.Set("SOAPAction", `"http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation"`)
 	_, action, err := srv.readSOAPRequest(req)
-	if err != nil || action != "GetDeviceInformation" {
-		t.Fatalf("SOAPAction header: action=%q err=%v", action, err)
-	}
-
-	// 2. Without the header the first Body child element is used.
-	req = httptest.NewRequest("POST", "/onvif/device_service", strings.NewReader(soapEnvelope(`<tds:GetScopes xmlns:tds="x"/>`)))
-	_, action, err = srv.readSOAPRequest(req)
 	if err != nil || action != "GetScopes" {
-		t.Fatalf("body detection: action=%q err=%v", action, err)
+		t.Fatalf("body wins: action=%q err=%v", action, err)
 	}
 
-	// 3. Empty body yields an empty action (→ ActionNotSupported fault).
+	// 2. Without a body element the SOAPAction header is used, with or
+	// without quotes and with a trailing slash (onvif-zeep sends
+	// ".../wsdlGetVideoSources/" for some operations).
+	for header, want := range map[string]string{
+		`"http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation"`: "GetDeviceInformation",
+		`http://www.onvif.org/ver10/media/wsdl/GetProfiles/`:            "GetProfiles",
+		`GetScopes`: "GetScopes",
+	} {
+		req = httptest.NewRequest("POST", "/onvif/device_service", strings.NewReader(""))
+		req.Header.Set("SOAPAction", header)
+		_, action, err = srv.readSOAPRequest(req)
+		if err != nil || action != want {
+			t.Fatalf("SOAPAction %q: action=%q err=%v", header, action, err)
+		}
+	}
+
+	// 3. Empty body and no header yields an empty action (→ ActionNotSupported fault).
 	req = httptest.NewRequest("POST", "/onvif/device_service", strings.NewReader(""))
 	_, action, err = srv.readSOAPRequest(req)
 	if err != nil || action != "" {
@@ -247,7 +257,7 @@ func TestWSDiscoveryProbeHelpers(t *testing.T) {
 		"http://192.168.10.5:8080/onvif/device_service",
 		"<wsa:RelatesTo>urn:uuid:1234-abcd</wsa:RelatesTo>",
 		"onvif://www.onvif.org/hardware/" + cfg.Server.DeviceInfo.Model,
-		"urn:uuid:" + cfg.Server.DeviceInfo.SerialNumber,
+		"<wsa:Address>urn:uuid:" + DeviceUUID(cfg.Server.DeviceInfo.SerialNumber) + "</wsa:Address>",
 		"dn:NetworkVideoTransmitter",
 	} {
 		if !strings.Contains(s, want) {

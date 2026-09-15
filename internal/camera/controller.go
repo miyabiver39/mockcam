@@ -47,6 +47,10 @@ type PTZ interface {
 	ContinuousMove(velPan, velTilt, velZoom float64)
 	Stop()
 	AddListener(fn func(pan, tilt, zoom float64))
+	Presets() []config.PTZPreset
+	SavePreset(name string) ([]config.PTZPreset, error)
+	GotoPreset(name string) (config.PTZPreset, bool)
+	DeletePreset(name string) ([]config.PTZPreset, error)
 }
 
 // FrameSource provides the latest live JPEG frame per profile.
@@ -395,65 +399,27 @@ func (c *Controller) PTZMove(action string, pan, tilt, zoom, velPan, velTilt, ve
 
 // Presets lists saved PTZ presets (never nil).
 func (c *Controller) Presets() []config.PTZPreset {
-	presets := c.cfg.Get().PTZ.Presets
-	if presets == nil {
-		presets = []config.PTZPreset{}
-	}
-	return presets
+	return c.ptz.Presets()
 }
 
 // SavePreset stores the current position under name (auto-named when empty,
 // overwriting an existing preset with the same name).
 func (c *Controller) SavePreset(name string) ([]config.PTZPreset, error) {
-	presets := c.Presets()
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = fmt.Sprintf("Preset_%d", len(presets)+1)
-	}
-	pan, tilt, zoom, _ := c.ptz.GetStatus()
-	p := config.PTZPreset{Name: name, Pan: pan, Tilt: tilt, Zoom: zoom}
-
-	replaced := false
-	for i := range presets {
-		if presets[i].Name == name {
-			presets[i] = p
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		presets = append(presets, p)
-	}
-	if err := c.cfg.UpdatePTZPresets(presets); err != nil {
-		return nil, err
-	}
-	return presets, nil
+	return c.ptz.SavePreset(name)
 }
 
 // GotoPreset moves to a saved preset.
 func (c *Controller) GotoPreset(name string) (config.PTZPreset, error) {
-	for _, p := range c.Presets() {
-		if p.Name == strings.TrimSpace(name) {
-			c.ptz.AbsoluteMove(p.Pan, p.Tilt, p.Zoom)
-			return p, nil
-		}
+	p, ok := c.ptz.GotoPreset(name)
+	if !ok {
+		return config.PTZPreset{}, fmt.Errorf("%w: preset %q", ErrNotFound, name)
 	}
-	return config.PTZPreset{}, fmt.Errorf("%w: preset %q", ErrNotFound, name)
+	return p, nil
 }
 
 // DeletePreset removes a preset (no error when it does not exist).
 func (c *Controller) DeletePreset(name string) ([]config.PTZPreset, error) {
-	name = strings.TrimSpace(name)
-	filtered := make([]config.PTZPreset, 0)
-	for _, p := range c.Presets() {
-		if p.Name != name {
-			filtered = append(filtered, p)
-		}
-	}
-	if err := c.cfg.UpdatePTZPresets(filtered); err != nil {
-		return nil, err
-	}
-	return filtered, nil
+	return c.ptz.DeletePreset(name)
 }
 
 // --- media ------------------------------------------------------------------
