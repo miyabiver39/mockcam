@@ -36,7 +36,7 @@
         <div>
           <h1 class="text-lg font-bold text-white tracking-wide flex items-center space-x-2">
             <span>MockCam</span>
-            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" x-text="status.version ? (status.version.startsWith('v') ? status.version : 'v' + status.version) : 'v1.5.0'"></span>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" x-text="status.version ? (status.version.startsWith('v') ? status.version : 'v' + status.version) : 'v1.6.0'"></span>
           </h1>
           <p class="text-xs text-slate-400" x-text="status.model || 'MC-Pro-S'"></p>
         </div>
@@ -591,7 +591,7 @@
 
   <!-- Footer -->
   <footer class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 text-[11px] text-slate-500 flex flex-col sm:flex-row items-center justify-between gap-2 border-t border-slate-800/60 mt-4">
-    <span>MockCam <span x-text="status.version ? 'v' + String(status.version).replace(/^v/, '') : 'v1.5.0'"></span> &middot; MIT License &middot; &copy; 2026 MockCam contributors</span>
+    <span>MockCam <span x-text="status.version ? 'v' + String(status.version).replace(/^v/, '') : 'v1.6.0'"></span> &middot; MIT License &middot; &copy; 2026 MockCam contributors</span>
     <span class="flex items-center space-x-3">
       <a href="https://github.com/miyabiver39/mockcam" target="_blank" rel="noopener" class="hover:text-cyan-400">GitHub</a>
       <a href="/api/docs" target="_blank" rel="noopener" class="hover:text-cyan-400" x-text="t('link_api_docs')"></a>

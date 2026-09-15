@@ -189,7 +189,7 @@ stdio — クライアントが MockCam 自体を起動する形（セッショ�
     "device_info": {
       "manufacturer": "MockCam Standard",
       "model": "MC-Pro-S",
-      "firmware_version": "1.5.0",
+      "firmware_version": "1.6.0",
       "serial_number": "MC2026090001",
       "hardware_id": "v1.0"
     }

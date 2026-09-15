@@ -17,7 +17,7 @@
 
 ```json
 {
-  "version": "1.5.0",
+  "version": "1.6.0",
   "model": "MC-Pro-S",
   "uptime_seconds": 128,
   "profiles_count": 2,
@@ -68,7 +68,7 @@
 
 ```json
 {
-  "application": { "name": "MockCam", "version": "1.5.0", "license": "MIT", "url": "https://github.com/miyabiver39/mockcam" },
+  "application": { "name": "MockCam", "version": "1.6.0", "license": "MIT", "url": "https://github.com/miyabiver39/mockcam" },
   "components": [
     { "name": "github.com/bluenviron/gortsplib/v5", "version": "v5.6.5", "license": "MIT", "copyright": "...", "url": "...", "kind": "go" },
     { "name": "HTS Voice tohoku-f01 (neutral)", "license": "CC BY 4.0", "kind": "tts", "notes": "This product uses ..." }
